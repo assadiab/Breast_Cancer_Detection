@@ -1,0 +1,10 @@
+[workspace]
+authors = ["assadiab <assa.diabira@etu.u-paris.fr>"]
+channels = ["conda-forge"]
+name = "Projet_kaggle"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
