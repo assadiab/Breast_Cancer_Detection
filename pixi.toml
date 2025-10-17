@@ -9,5 +9,6 @@ version = "0.1.0"
 
 [dependencies]
 kaggle = ">=1.7.4.5,<2"
-pandas = ">=2.3.3,<3"
 pydicom = ">=3.0.1,<4"
+pandas = ">=2.3.3,<3"
+pytest = ">=8.4.2,<9"
