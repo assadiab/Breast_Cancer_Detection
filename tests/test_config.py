@@ -3,11 +3,19 @@ import pytest
 from typing import Dict
 from core.configuration import Config
 
+# Temporary dummy paths for testing
+DUMMY_CSV = '/tmp/dummy.csv'
+DUMMY_IMAGES = '/tmp/images'
+
+# Ensure dummy paths exist for the test
+os.makedirs(DUMMY_IMAGES, exist_ok=True)
+with open(DUMMY_CSV, 'w') as f:
+    f.write("id,image_path,label\n")  # minimal CSV header
 
 @pytest.fixture
 def config() -> Config:
     """Fixture to initialize Config for tests."""
-    return Config()
+    return Config(csv_path=DUMMY_CSV, images_dir=DUMMY_IMAGES)
 
 
 # ==========================================================
@@ -23,14 +31,13 @@ def test_default_configuration_structure(config: Config):
 def test_default_paths_exist_in_config(config: Config):
     """Test that all expected dataset paths are properly defined."""
     paths: Dict[str, str] = config.config['paths']
-    expected_path_keys = {'root_dir', 'train_images', 'test_images', 'train_csv', 'test_csv'}
+    expected_path_keys = {'csv', 'images'}
 
     assert expected_path_keys == set(paths.keys()), "Paths keys do not match expected keys."
 
-    # Validate that paths are constructed correctly
-    root_dir = paths['root_dir']
-    for key, path in paths.items():
-        assert path.startswith(root_dir), f"Path '{key}' does not start with root_dir."
+    # Validate that paths are correctly set
+    assert paths['csv'] == DUMMY_CSV
+    assert paths['images'] == DUMMY_IMAGES
 
 
 def test_preprocessing_defaults(config: Config):

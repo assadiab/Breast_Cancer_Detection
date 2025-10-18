@@ -1,69 +1,90 @@
 import pytest
-from unittest.mock import patch, MagicMock
-import pandas as pd
-from core.loader import Loader  # remplacer par le chemin réel
+import numpy as np
+from pathlib import Path
+from core.loader import Loader
 from core.configuration import Config
+import pandas as pd
+import pydicom
+from pydicom.dataset import FileDataset, FileMetaDataset
+from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+import datetime
 
-
-# Création d'un Config mock
-class MockConfig:
-    train_csv_path = "train.csv"
-    test_csv_path = "test.csv"
-
-
-# Fixtures pour pandas DataFrame simulés
+# ---------------- Fixtures CSV ---------------- #
 @pytest.fixture
-def mock_train_df():
-    return pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
-
+def tmp_csv(tmp_path):
+    csv_path = tmp_path / "data.csv"
+    data = pd.DataFrame({
+        'patient_id': [1, 2],
+        'image_id': [10, 20],
+        'density': ['A', 'B']
+    })
+    data.to_csv(csv_path, index=False)
+    return str(csv_path)
 
 @pytest.fixture
-def mock_test_df():
-    return pd.DataFrame({"colA": [5, 6], "colB": [7, 8]})
+def tmp_images_dir(tmp_path):
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    return str(images_dir)
 
+@pytest.fixture
+def config(tmp_csv, tmp_images_dir):
+    return Config(csv_path=tmp_csv, images_dir=tmp_images_dir)
 
-# Test Loader.load_dataframes
-def test_load_dataframes(mock_train_df, mock_test_df):
-    loader = Loader(config=MockConfig())
+# ---------------- Helper DICOM ---------------- #
+def create_dummy_dicom(path: Path, pixel_array: np.ndarray):
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = generate_uid()
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.ImplementationClassUID = generate_uid()
 
-    with patch("pandas.read_csv", side_effect=[mock_train_df, mock_test_df]) as mock_read:
-        loader.load_dataframes()
+    ds = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\0" * 128)
+    ds.Modality = 'CT'
+    ds.ContentDate = datetime.datetime.now().strftime('%Y%m%d')
+    ds.ContentTime = datetime.datetime.now().strftime('%H%M%S')
+    ds.Rows, ds.Columns = pixel_array.shape
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.SamplesPerPixel = 1
+    ds.BitsAllocated = 16
+    ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 1
+    ds.RescaleSlope = 2.0
+    ds.RescaleIntercept = 10.0
+    ds.PixelData = pixel_array.tobytes()
+    ds.save_as(str(path))
 
-        # Vérifie que pd.read_csv a été appelé avec les bons chemins
-        mock_read.assert_any_call(MockConfig.train_csv_path)
-        mock_read.assert_any_call(MockConfig.test_csv_path)
+# ---------------- Tests ---------------- #
+def test_load_dataframe(config):
+    loader = Loader(config)
+    loader.load_df()
+    df = loader.get_df()
+    assert isinstance(df, pd.DataFrame)
+    assert df.shape[0] == 2
 
-        # Vérifie que les DataFrames sont bien assignés
-        pd.testing.assert_frame_equal(loader.train_df, mock_train_df)
-        pd.testing.assert_frame_equal(loader.test_df, mock_test_df)
+def test_load_dicom(tmp_images_dir, config):
+    dicom_path = Path(tmp_images_dir) / "dummy.dcm"
+    arr = np.array([[0, 50], [100, 200]], dtype=np.uint16)
+    create_dummy_dicom(dicom_path, arr)
 
+    loader = Loader(config)
+    img = loader.load_dicom(str(dicom_path))
+    # Check slope/intercept applied
+    assert img[0,0] == arr[0,0]*2 + 10
+    assert img[1,1] == arr[1,1]*2 + 10
+    assert img.shape == arr.shape
 
-# Test get_train_df charge si None
-def test_get_train_df_calls_load(mock_train_df, mock_test_df):
-    loader = Loader(config=MockConfig())
+def test_load_multiple_dicoms(tmp_images_dir, config):
+    dicom_paths = []
+    for i in range(2):
+        path = Path(tmp_images_dir) / f"dummy_{i}.dcm"
+        arr = np.array([[i*10, i*20], [i*30, i*40]], dtype=np.uint16)
+        create_dummy_dicom(path, arr)
+        dicom_paths.append(str(path))
 
-    with patch("pandas.read_csv", side_effect=[mock_train_df, mock_test_df]):
-        df = loader.get_train_df()
-        pd.testing.assert_frame_equal(df, mock_train_df)
-
-
-# Test get_test_df charge si None
-def test_get_test_df_calls_load(mock_train_df, mock_test_df):
-    loader = Loader(config=MockConfig())
-
-    with patch("pandas.read_csv", side_effect=[mock_train_df, mock_test_df]):
-        df = loader.get_test_df()
-        pd.testing.assert_frame_equal(df, mock_test_df)
-
-
-# Test gestion d'erreur
-def test_load_dataframes_exception(monkeypatch):
-    loader = Loader(config=MockConfig())
-
-    def raise_error(path):
-        raise FileNotFoundError(f"{path} not found")
-
-    monkeypatch.setattr(pd, "read_csv", raise_error)
-
-    loader.load_dataframes()
-    # Comme on print, pas de crash attendu
+    loader = Loader(config)
+    images = loader.load_multiple_dicoms(dicom_paths)
+    assert len(images) == 2
+    for i, img in enumerate(images):
+        assert img[0,0] == i*10*2 + 10

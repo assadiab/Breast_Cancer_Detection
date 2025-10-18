@@ -1,21 +1,28 @@
 import os
-from typing import Dict, Any, Optional
-
+from typing import Dict, Any
 
 class Config:
     """
     Handles dataset configuration, including file paths, preprocessing, and model parameters.
-    Manages and exposes dataset configuration values.
+    Works without differentiating between train and test datasets.
     """
 
-    def __init__(self, config_path: Optional[str] = None) -> None:
+    def __init__(self, csv_path: str, images_dir: str) -> None:
         """
         Initialize the dataset configuration.
 
         Args:
-            config_path: Default RSNA settings are used.
+            csv_path: Path to the dataset CSV file.
+            images_dir: Path to the folder containing all images.
         """
+        if not os.path.isfile(csv_path):
+            raise FileNotFoundError(f"CSV file not found: {csv_path}")
+        if not os.path.isdir(images_dir):
+            raise FileNotFoundError(f"Images directory not found: {images_dir}")
+
         self.config: Dict[str, Any] = {}
+        self.csv_path = csv_path
+        self.images_dir = images_dir
         self._initialize_default_config()
 
     # ==========================================================
@@ -23,16 +30,12 @@ class Config:
     # ==========================================================
 
     def _initialize_default_config(self) -> None:
-        """Initialize the default configuration for the RSNA Breast Cancer Detection dataset."""
-        root_dir = '../data'
+        """Initialize the default configuration for the dataset."""
 
         self.config = {
             'paths': {
-                'root_dir': root_dir,
-                'train_images': os.path.join(root_dir, 'train_images'),
-                'test_images': os.path.join(root_dir, 'test_images'),
-                'train_csv': os.path.join(root_dir, 'train.csv'),
-                'test_csv': os.path.join(root_dir, 'test.csv'),
+                'csv': self.csv_path,         # user-provided CSV path
+                'images': self.images_dir,    # user-provided images directory
             },
             'preprocessing': {
                 'target_size': [512, 512],
@@ -56,12 +59,7 @@ class Config:
 
     @property
     def density_categories(self) -> Dict[str, str]:
-        """
-        Return the dictionary mapping breast density categories to their descriptions.
-
-        Returns:
-            dict: Mapping of density category codes ('A', 'B', 'C', 'D') to textual descriptions.
-        """
+        """Return the dictionary mapping breast density categories to their descriptions."""
         return self.config['preprocessing']['density_categories']
 
     def get_density_description(self, density: str) -> str:
