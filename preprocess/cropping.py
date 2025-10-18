@@ -1,202 +1,380 @@
+# cropping.py
 import numpy as np
-import cv2
-from typing import Tuple, Optional
+import pandas as pd
+import os
+import json
+import math
+import cv2 as cv
+from pathlib import Path
+from tqdm.auto import tqdm
+from typing import Dict, Any, Tuple, List
+import matplotlib.pyplot as plt
 
 
 class Cropping:
     """
-    Handles breast ROI extraction, orientation correction,
-    pectoral muscle removal, and cropping operations.
-
-    SRP: Only responsible for image processing operations.
+    Classe SRP pour le cropping ROI des mammographies
+    Utilise les autres classes pour le chargement et la configuration
     """
 
-    def __init__(self, target_size: Tuple[int, int] = (512, 512), margin_mm: float = 5.0):
-        """
-        Initialize the cropping configuration.
+    def __init__(self, config, loader, dataset_manager):
+        self.config = config
+        self.loader = loader
+        self.dataset_manager = dataset_manager
+        self.roi_cfg = config.roi_config
 
-        Args:
-            target_size: Final image size after cropping (width, height).
-            margin_mm: Margin (in mm) added around the bounding box (anisotropic).
-        """
-        self.target_size = target_size
-        self.margin_mm = margin_mm
+    # ========== SEGMENTATION ET TRAITEMENT ROI ==========
 
-    # -----------------------------------------------------------
-    # --- MASKING OPERATIONS ---
-    # -----------------------------------------------------------
+    def breast_mask(self, img01: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int, int, int]]:
+        """Segmentation du sein"""
+        min_area = self.roi_cfg.get("min_area_px", 12000)
+        morpho_disk = self.roi_cfg.get("morpho_disk", 5)
+        use_hull = self.roi_cfg.get("use_convex_hull", True)
 
-    def breast_mask(self, image: np.ndarray) -> np.ndarray:
-        """
-        Compute a binary breast mask from the mammography image.
+        h, w = img01.shape
+        if not np.any(img01 > 0):
+            return np.zeros((h, w), bool), (0, 0, h, w)
 
-        Args:
-            image: 2D grayscale image array.
+        # Seuillage d'Otsu
+        u8 = (np.clip(img01, 0, 1) * 255).astype(np.uint8)
+        thr_val, _ = cv.threshold(u8, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
+        thr = max(thr_val / 255.0, 0.05)
+        mask = (img01 > thr).astype(np.uint8)
 
-        Returns:
-            Binary mask isolating the breast region.
-        """
-        img = np.copy(image)
-        img = cv2.GaussianBlur(img, (5, 5), 0)
-        _, mask = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Fermeture morphologique
+        k = 2 * morpho_disk + 1
+        kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (k, k))
+        mask = cv.morphologyEx(mask, cv.MORPH_CLOSE, kernel)
 
-        # Morphological cleaning
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        return (mask > 0).astype(np.uint8)
+        # Plus grande composante connexe
+        num, labels, stats, _ = cv.connectedComponentsWithStats(mask, 8)
+        if num <= 1:
+            return np.zeros((h, w), bool), (0, 0, h, w)
 
-    def erode_mask_mm(self, mask: np.ndarray, iterations: int = 2) -> np.ndarray:
-        """
-        Erode a binary mask to remove small border artifacts.
+        idx = int(np.argmax(stats[1:, cv.CC_STAT_AREA])) + 1
+        if stats[idx, cv.CC_STAT_AREA] < min_area:
+            return np.zeros((h, w), bool), (0, 0, h, w)
 
-        Args:
-            mask: Binary mask.
-            iterations: Number of erosion passes.
+        comp = (labels == idx).astype(np.uint8)
 
-        Returns:
-            Eroded mask.
-        """
-        kernel = np.ones((3, 3), np.uint8)
-        return cv2.erode(mask, kernel, iterations=iterations)
+        # Enveloppe convexe
+        if use_hull:
+            cnts, _ = cv.findContours(comp, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+            if len(cnts):
+                hull = cv.convexHull(max(cnts, key=cv.contourArea))
+                comp = np.zeros_like(comp)
+                cv.fillConvexPoly(comp, hull, 1)
 
-    def remove_pectoral_MLO(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """
-        Remove pectoral region from MLO view images.
+        ys, xs = np.where(comp > 0)
+        bbox = (int(ys.min()), int(xs.min()), int(ys.max() + 1), int(xs.max() + 1))
 
-        Args:
-            image: Original image (grayscale).
-            mask: Breast mask.
+        return comp.astype(bool), bbox
 
-        Returns:
-            Mask without pectoral region.
-        """
-        # Create copy to avoid in-place modification
-        mask = mask.copy()
-        h, w = mask.shape
-        triangle = np.array([[0, 0], [int(0.2 * w), 0], [0, int(0.3 * h)]], np.int32)
-        cv2.fillConvexPoly(mask, triangle, 0)
-        return mask
+    def remove_pectoral_MLO(self, img01: np.ndarray, mask: np.ndarray, laterality: str, view: str) -> np.ndarray:
+        """Retrait du muscle pectoral pour les vues MLO"""
+        if str(view).upper() != "MLO":
+            return mask
 
-    # -----------------------------------------------------------
-    # --- ORIENTATION ---
-    # -----------------------------------------------------------
+        h, w = img01.shape
 
-    def orient_left(self, image: np.ndarray) -> np.ndarray:
-        """
-        Ensure that the breast is oriented to the left side of the image.
-
-        Args:
-            image: Input mammogram.
-
-        Returns:
-            Oriented image.
-        """
-        left_mean = np.mean(image[:, :image.shape[1] // 2])
-        right_mean = np.mean(image[:, image.shape[1] // 2:])
-        if right_mean > left_mean:
-            return np.fliplr(image)
-        return image
-
-    def orient_by_laterality(self, image: np.ndarray, laterality: str) -> np.ndarray:
-        """
-        Orient image based on known laterality.
-
-        Args:
-            image: Input mammogram.
-            laterality: 'L' for left breast, 'R' for right breast.
-
-        Returns:
-            Oriented image (always with breast on left side).
-        """
-        if laterality.upper() == 'R':
-            return np.fliplr(image)
-        elif laterality.upper() == 'L':
-            return image
+        # Définition de la région d'intérêt selon la latéralité
+        if str(laterality).upper() == "R":
+            roi = img01[0:int(0.45 * h), int(0.55 * w):w]
+            xoff = int(0.55 * w)
+            flip = False
         else:
-            # Fallback to auto-detection for invalid laterality
-            return self.orient_left(image)
+            roi = img01[0:int(0.45 * h), 0:int(0.45 * w)]
+            xoff = 0
+            flip = True
 
-    # -----------------------------------------------------------
-    # --- BOUNDING BOX / CROPPING ---
-    # -----------------------------------------------------------
+        # Détection de lignes
+        edges = cv.Canny((roi * 255).astype(np.uint8), 30, 90)
+        if flip:
+            edges = np.fliplr(edges)
 
-    def bbox_with_margin_mm_aniso(self, mask: np.ndarray, margin_ratio: float = 0.05) -> Tuple[int, int, int, int]:
-        """
-        Compute a bounding box around the breast with anisotropic margin.
+        lines = cv.HoughLines(edges, 1, np.pi / 180, threshold=80)
+        if lines is None:
+            return mask
 
-        Args:
-            mask: Binary breast mask.
-            margin_ratio: Relative margin applied to each side.
+        # Sélection de la meilleure ligne
+        best, score = None, -1
+        for rho, theta in lines[:, 0, :]:
+            sc = 90 - min(90, abs(theta * 180 / np.pi - 45))
+            if sc > score:
+                best, score = (rho, theta), sc
 
-        Returns:
-            Bounding box (x_min, y_min, x_max, y_max)
-        """
-        ys, xs = np.where(mask > 0)
-        if len(xs) == 0 or len(ys) == 0:
-            return 0, 0, mask.shape[1], mask.shape[0]
-        x_min, x_max = xs.min(), xs.max()
-        y_min, y_max = ys.min(), ys.max()
+        if best is None:
+            return mask
 
-        margin_x = int((x_max - x_min) * margin_ratio)
-        margin_y = int((y_max - y_min) * margin_ratio)
+        rho, theta = best
+        a, b = math.cos(theta), math.sin(theta)
+        x0, y0 = a * rho, b * rho
 
-        x_min = max(0, x_min - margin_x)
-        x_max = min(mask.shape[1], x_max + margin_x)
-        y_min = max(0, y_min - margin_y)
-        y_max = min(mask.shape[0], y_max + margin_y)
-        return x_min, y_min, x_max, y_max
+        # Points de la ligne
+        p1 = (int(x0 + 1000 * (-b)), int(y0 + 1000 * (a)))
+        p2 = (int(x0 - 1000 * (-b)), int(y0 - 1000 * (a)))
 
-    def crop_to_roi(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """
-        Crop image to ROI defined by the breast mask.
-
-        Args:
-            image: Original image.
-            mask: Binary mask of breast region.
-
-        Returns:
-            Cropped image (resized to target size).
-        """
-        x_min, y_min, x_max, y_max = self.bbox_with_margin_mm_aniso(mask)
-        cropped = image[y_min:y_max, x_min:x_max]
-        resized = cv2.resize(cropped, self.target_size, interpolation=cv2.INTER_AREA)
-        return resized
-
-    # -----------------------------------------------------------
-    # --- MAIN PIPELINE ---
-    # -----------------------------------------------------------
-
-    def process_with_metadata(self, image: np.ndarray, view: str = None, laterality: str = None) -> np.ndarray:
-        """
-        Enhanced pipeline using view and laterality metadata.
-        SRP: Only processes images, doesn't handle data extraction.
-
-        Args:
-            image: Grayscale image as NumPy array.
-            view: 'MLO' or 'CC'
-            laterality: 'L' or 'R'
-
-        Returns:
-            Cropped image ready for model input.
-        """
-        if image.ndim != 2:
-            raise ValueError("Input image must be 2D grayscale.")
-
-        # Step 1: Orientation
-        if laterality and laterality.upper() in ['L', 'R']:
-            image = self.orient_by_laterality(image, laterality)
+        # Création du triangle pectoral
+        if str(laterality).upper() == "R":
+            tri = np.array([
+                [p1[0] + xoff, p1[1]],
+                [p2[0] + xoff, p2[1]],
+                [w - 1, 0]
+            ], np.int32)
         else:
-            image = self.orient_left(image)
+            p1x = (roi.shape[1] - 1 - p1[0]) + xoff
+            p2x = (roi.shape[1] - 1 - p2[0]) + xoff
+            tri = np.array([
+                [p1x, p1[1]],
+                [p2x, p2[1]],
+                [0, 0]
+            ], np.int32)
 
-        # Step 2: Breast masking
-        mask = self.breast_mask(image)
+        pect = np.zeros_like(mask, np.uint8)
+        cv.fillConvexPoly(pect, tri, 1)
 
-        # Step 3: Pectoral removal ONLY for MLO views
-        if view and view.upper() == 'MLO':
-            mask = self.remove_pectoral_MLO(image, mask)
+        before = mask.sum()
+        newm = mask & (pect == 0)
 
-        # Step 4: Post-processing
-        mask = self.erode_mask_mm(mask)
-        cropped = self.crop_to_roi(image, mask)
+        return newm if newm.sum() >= 0.75 * max(before, 1) else mask
 
-        return cropped
+    def erode_mask_mm(self, mask_bool: np.ndarray, spacing_mm: Tuple[float, float]) -> np.ndarray:
+        """Érosion du masque en mm"""
+        mm_y = self.roi_cfg.get("inset_mm_y", 2.0)
+        mm_x = self.roi_cfg.get("inset_mm_x", 0.8)
+
+        if (mm_y <= 0) and (mm_x <= 0):
+            return mask_bool
+
+        row_mm, col_mm = spacing_mm
+        ky = max(1, int(round(mm_y / max(row_mm, 1e-6))))
+        kx = max(1, int(round(mm_x / max(col_mm, 1e-6))))
+
+        K = cv.getStructuringElement(cv.MORPH_ELLIPSE, (2 * kx + 1, 2 * ky + 1))
+        eroded = cv.erode(mask_bool.astype(np.uint8), K, iterations=1).astype(bool)
+
+        return eroded if eroded.sum() >= 0.70 * max(mask_bool.sum(), 1) else mask_bool
+
+    def orient_left(self, img01: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool]:
+        """Orientation standard (sein gauche)"""
+        ys, xs = np.where(mask)
+        if len(xs) == 0:
+            return img01, mask, False
+
+        flipped = (xs.mean() > img01.shape[1] / 2)
+        if flipped:
+            return (np.ascontiguousarray(np.fliplr(img01)),
+                    np.ascontiguousarray(np.fliplr(mask)), True)
+
+        return img01, mask, False
+
+    def bbox_with_margin_mm_aniso(self, bbox: Tuple[int, int, int, int], spacing_mm: Tuple[float, float],
+                                  h: int, w: int, view: str) -> Tuple[int, int, int, int]:
+        """Expansion de la bbox avec marges en mm"""
+        y0, x0, y1, x1 = map(int, bbox)
+
+        margins = self.roi_cfg["margins_mm"].get(view.upper(), {"x": 10.0, "y": 8.0})
+        margin_mm_y = margins["y"]
+        margin_mm_x = margins["x"]
+        clamp_frac = self.roi_cfg.get("max_margin_frac", 0.1)
+
+        dy = int(round(margin_mm_y / max(spacing_mm[0], 1e-6)))
+        dx = int(round(margin_mm_x / max(spacing_mm[1], 1e-6)))
+
+        dy = min(dy, int(round(clamp_frac * h)))
+        dx = min(dx, int(round(clamp_frac * w)))
+
+        y0 = max(0, y0 - dy)
+        y1 = min(h, y1 + dy)
+        x0 = max(0, x0 - dx)
+        x1 = min(w, x1 + dx)
+
+        # Bonus marge côté mamelon
+        extra_right_mm = self.roi_cfg.get("extra_right_mm", 3.0)
+        x1 = min(w, x1 + int(round(extra_right_mm / max(spacing_mm[1], 1e-6))))
+
+        return y0, x0, y1, x1
+
+    def _smooth_1d(self, v: np.ndarray, frac: float = 0.01) -> np.ndarray:
+        """Lissage 1D"""
+        k = max(3, int(len(v) * frac))
+        k = k if k % 2 == 1 else (k + 1)
+        kernel = np.ones(k) / k
+        return np.convolve(v, kernel, mode="same")
+
+    def profile_crop_box(self, img01: np.ndarray, pad_frac: float = 0.02) -> Tuple[int, int, int, int]:
+        """Fallback basé sur les profils"""
+        H, W = img01.shape
+
+        # Profil horizontal
+        col_sum = self._smooth_1d(img01.sum(axis=0))
+        col_std = self._smooth_1d(img01.std(axis=0))
+        s = (col_sum * col_std)
+        xs = np.where(s > 0.05 * (s.max() + 1e-6))[0]
+        if len(xs) == 0:
+            return 0, 0, H, W
+        x0, x1 = xs.min(), xs.max()
+
+        # Profil vertical
+        row_sum = self._smooth_1d(img01.sum(axis=1))
+        row_std = self._smooth_1d(img01.std(axis=1))
+        ss = (row_sum * row_std)
+        ys = np.where(ss > 0.05 * (ss.max() + 1e-6))[0]
+        if len(ys) == 0:
+            return 0, 0, H, W
+        y0, y1 = ys.min(), ys.max()
+
+        pad_x = int(W * pad_frac)
+        pad_y = int(H * pad_frac)
+
+        y0 = max(0, y0 - pad_y)
+        y1 = min(H, y1 + pad_y)
+        x0 = max(0, x0 - pad_x)
+        x1 = min(W, x1 + pad_x)
+
+        return y0, x0, y1, x1
+
+    def refine_vertical_bounds(self, mask_bool: np.ndarray, y0: int, y1: int,
+                               spacing_mm: Tuple[float, float]) -> Tuple[int, int]:
+        """Raffinement des limites verticales"""
+        H, _ = mask_bool.shape
+        rows = np.where(mask_bool.any(axis=1))[0]
+        if rows.size == 0:
+            return y0, y1
+
+        occ = mask_bool.sum(axis=1).astype(np.float32)
+        csum = np.cumsum(occ)
+        total = float(csum[-1]) if csum.size else 0.0
+        if total <= 0:
+            return y0, y1
+
+        min_keep_frac = 0.98
+        pad_mm = 3.0
+
+        lo_cut = int(np.searchsorted(csum, (1.0 - min_keep_frac) * total))
+        hi_cut = int(np.searchsorted(csum, min_keep_frac * total))
+
+        pad_y = int(round(pad_mm / max(spacing_mm[0], 1e-6)))
+        y0_new = max(0, lo_cut - pad_y)
+        y1_new = min(H, hi_cut + pad_y)
+
+        y0_new = max(y0, y0_new)
+        y1_new = min(y1, y1_new)
+
+        return (y0, y1) if y1_new <= y0_new else (y0_new, y1_new)
+
+    def soft_tanh_norm(self, x: np.ndarray) -> np.ndarray:
+        """Normalisation soft-tanh"""
+        k = self.roi_cfg.get("soft_tanh_k", 3.0)
+        eps = 1e-6
+
+        med = np.median(x)
+        mad = np.median(np.abs(x - med)) + eps
+        s = 1.4826 * mad
+        y = np.tanh((x - med) / (k * s + eps))
+        y01 = (y + 1.0) / 2.0
+        return y01.astype(np.float32)
+
+    # ========== PIPELINE PRINCIPALE ==========
+
+    def process_one(self, patient_id: int, image_id: int, laterality: str, view: str,
+                    dicom_path: str) -> Dict[str, Any]:
+        """Traite une seule image - version SRP"""
+        # 1) Chargement pour ROI via Loader
+        img01, spacing = self.loader.load_dicom_for_roi(dicom_path)
+
+        # 2) Segmentation du sein
+        mask, _ = self.breast_mask(img01)
+
+        # 3) Retrait pectoral + érosion
+        mask = self.remove_pectoral_MLO(img01, mask, laterality, view)
+        mask = self.erode_mask_mm(mask, spacing)
+
+        # 4) Orientation standard
+        imgO, maskO, flipped = self.orient_left(img01, mask)
+
+        # 5) BBox + marges
+        num, labels, stats, _ = cv.connectedComponentsWithStats(maskO.astype(np.uint8), 8)
+        if num <= 1:
+            # Fallback: image entière
+            h, w = imgO.shape
+            y0, x0, y1, x1 = 0, 0, h, w
+        else:
+            idx = int(np.argmax(stats[1:, cv.CC_STAT_AREA])) + 1
+            x = stats[idx, cv.CC_STAT_LEFT]
+            y = stats[idx, cv.CC_STAT_TOP]
+            wbox = stats[idx, cv.CC_STAT_WIDTH]
+            hbox = stats[idx, cv.CC_STAT_HEIGHT]
+            base_bbox = (int(y), int(x), int(y + hbox), int(x + wbox))
+
+            y0, x0, y1, x1 = self.bbox_with_margin_mm_aniso(
+                base_bbox, spacing, imgO.shape[0], imgO.shape[1], view
+            )
+
+            # Fallback si bords touchés
+            touches = int(y0 == 0) + int(y1 == imgO.shape[0]) + int(x1 == imgO.shape[1])
+            if self.roi_cfg.get("enable_profile_fallback", True) and (
+                    touches >= self.roi_cfg.get("touch_crit_thresh", 1)):
+                y0, x0, y1, x1 = self.profile_crop_box(imgO, pad_frac=0.03)
+
+            # Raffinement vertical
+            y0, y1 = self.refine_vertical_bounds(maskO, y0, y1, spacing_mm=spacing)
+
+        # 6) Crop modèle
+        img_lin, _ = self.loader.load_dicom_linear(dicom_path)
+        if flipped:
+            img_lin = np.ascontiguousarray(np.fliplr(img_lin))
+
+        raw_crop = img_lin[y0:y1, x0:x1].astype(np.float32)
+        crop_model = self.soft_tanh_norm(raw_crop)
+
+        # Redimensionnement optionnel
+        target_hw = self.roi_cfg.get("target_hw")
+        if target_hw is not None:
+            H, W = target_hw
+            crop_model = cv.resize(crop_model, (W, H), interpolation=cv.INTER_AREA)
+
+        return {
+            'patient_id': patient_id,
+            'image_id': image_id,
+            'laterality': laterality,
+            'view': view,
+            'bbox': [int(y0), int(x0), int(y1), int(x1)],
+            'flipped': bool(flipped),
+            'spacing': {'row': float(spacing[0]), 'col': float(spacing[1])},
+            'crop_shape': crop_model.shape,
+            'crop_model': crop_model,
+            'raw_crop': raw_crop
+        }
+
+    def process_dataframe(self, df: pd.DataFrame, output_dir: Path, subset_n: int = None) -> List[Dict[str, Any]]:
+        """Traite un dataframe complet d'images"""
+        if subset_n is not None:
+            df = df.sample(int(subset_n), random_state=self.roi_cfg.get("random_state", 42)).reset_index(drop=True)
+
+        results = []
+        skipped = failed = 0
+
+        for row in tqdm(df.to_dict(orient="records")):
+            try:
+                pid = int(row["patient_id"])
+                iid = int(row["image_id"])
+                laterality = str(row["laterality"])
+                view = str(row["view"])
+
+                # Utilise DatasetManager pour le chemin
+                dicom_path = self.dataset_manager.get_dicom_path(pid, iid)
+
+                if not os.path.exists(dicom_path):
+                    skipped += 1
+                    continue
+
+                result = self.process_one(pid, iid, laterality, view, dicom_path)
+                results.append(result)
+
+            except Exception as e:
+                failed += 1
+                print(f"ERROR @ {row.get('patient_id')} {row.get('image_id')} → {e}")
+
+        print(f"Terminé : {len(results)} crops — SKIPPED={skipped}, FAILED={failed}")
+        return results

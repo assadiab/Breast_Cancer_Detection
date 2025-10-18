@@ -66,3 +66,28 @@ class DatasetManager:
             "spacing": spacing,
             "path": str(dicom_path)
         }
+    def generate_manifest(self, df: pd.DataFrame, output_dir: Path,
+                          manifest_name: str = "manifest.jsonl") -> list[dict]:
+        """Génère un manifest avec toutes les infos DICOM"""
+        manifest = []
+        for _, row in df.iterrows():
+            info = self.get_dicom_info(row['patient_id'], row['image_id'])
+            info.update({
+                'spacing': self._get_spacing(info['dicom_path']),
+                'density_description': self.config.get_density_description(row.get('density', ''))
+            })
+            manifest.append(info)
+
+        # Sauvegarde du manifest
+        manifest_path = output_dir / manifest_name
+        with open(manifest_path, 'w') as f:
+            for item in manifest:
+                f.write(json.dumps(item) + '\n')
+
+        return manifest
+
+    def _get_spacing(self, dicom_path: str) -> dict:
+        """Wrapper pour spacing cohérent"""
+        loader = Loader(self.config)
+        _, spacing = loader.load_dicom_linear(dicom_path)
+        return {'row': spacing[0], 'col': spacing[1]}

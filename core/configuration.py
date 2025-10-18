@@ -55,6 +55,19 @@ class Config:
                     'D': 'Extremely dense'
                 }
             },
+            'roi_processing': {  # ⭐ NOUVEAU
+                'min_area_px': 12000,
+                'morpho_disk': 5,
+                'use_convex_hull': True,
+                'inset_mm_y': 2.0,
+                'inset_mm_x': 0.8,
+                'margins_mm': {
+                    'CC': {'x': 7.0, 'y': 6.5},
+                    'MLO': {'x': 9.0, 'y': 6.5},
+                },
+                'norm_mode': 'soft_tanh',
+                'soft_tanh_k': 3.0
+            },
             'model': {
                 'input_shape': [512, 512, 1],
                 'batch_size': 32
@@ -80,3 +93,8 @@ class Config:
             str: The corresponding density description or 'Unknown density' if not found.
         """
         return self.density_categories.get(density, 'Unknown density')
+
+    @property
+    def roi_config(self) -> dict:
+        """Accès aux paramètres ROI"""
+        return self.config.get('roi_processing', {})

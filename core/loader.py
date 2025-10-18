@@ -119,3 +119,29 @@ class Loader:
             except Exception as e:
                 print(f"Failed to load DICOM {path}: {e}")
         return images
+
+    def load_dicom_for_roi(self, dicom_path: str, verbose: bool = False) -> tuple[np.ndarray, tuple]:
+        """Chargement DICOM optimisé pour ROI avec normalisation [0,1]"""
+        img = self.load_dicom(dicom_path, verbose=verbose, output_dtype=np.float32)
+        img01 = self.robust_normalize01(img, 0.5, 99.5)
+        spacing = self._get_dicom_spacing(dicom_path)
+        return img01, spacing
+
+    def load_dicom_linear(self, dicom_path: str, verbose: bool = False) -> tuple[np.ndarray, tuple]:
+        """Chargement DICOM linéaire sans normalisation"""
+        img = self.load_dicom(dicom_path, verbose=verbose, output_dtype=np.float32)
+        spacing = self._get_dicom_spacing(dicom_path)
+        return img, spacing
+
+    def _get_dicom_spacing(self, dicom_path: str) -> tuple:
+        """Extrait le spacing DICOM sans recharger l'image"""
+        ds = pydicom.dcmread(dicom_path, stop_before_pixels=True)
+        spacing = getattr(ds, "PixelSpacing", [0.2, 0.2])
+        return (float(spacing[0]), float(spacing[1]))
+
+    @staticmethod
+    def robust_normalize01(arr, p_low=0.5, p_high=99.5):
+        """Normalisation robuste vers [0,1]"""
+        lo, hi = np.percentile(arr, (p_low, p_high))
+        x = (arr - lo) / max(hi - lo, 1e-6)
+        return np.clip(x, 0, 1).astype(np.float32)

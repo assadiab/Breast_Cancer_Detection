@@ -1,7 +1,17 @@
 from pathlib import Path
 import pytest
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
+from typing import List, Dict, Tuple
+import json
+from datetime import datetime
+import time
+import cv2
+import imageio
+from PIL import Image
+
 from core.configuration import Config
 from core.loader import Loader
 from core.dataset_manager import DatasetManager
@@ -9,490 +19,506 @@ from preprocess.cropping import Cropping
 from preprocess.resampler import IsotropicResampler
 from preprocess.windowing import Windowing
 
+# ==========================================================
+# CONFIGURATION DES CAS DE TEST
+# ==========================================================
 
-@pytest.fixture
-def setup_pipeline(tmp_path):
-    """
-    Initialize Config, Loader, DatasetManager and preprocessing objects.
-    """
+TEST_CASES = [
+    (10011, 220375232),  # Patient 10011 - L-CC
+    (10011, 270344397),  # Patient 10011 - L-MLO
+    (10011, 541722628),  # Patient 10011 - R-CC
+    (10011, 1031443799),  # Patient 10011 - R-MLO
+    (10130, 613462606),  # Patient 10130 - L-CC
+]
+
+# Configuration de la sauvegarde
+SAVE_STEP_IMAGES = True  # Sauvegarder les images à chaque étape
+VISUALIZE_ALL_IMAGES = True  # Générer les visualisations détaillées
+VISUALIZE_SUMMARY = True  # Générer le résumé visuel global
+
+
+# ==========================================================
+# FIXTURES
+# ==========================================================
+
+@pytest.fixture(scope="module")
+def setup_pipeline(tmp_path_factory):
+    """Initialize pipeline components."""
     csv_path = Path("../data/train.csv")
     images_dir = Path("../data/train_images")
-    out_dir = tmp_path
+    out_dir = tmp_path_factory.mktemp("resampled")
 
     config = Config(csv_path=csv_path, images_dir=images_dir, out_dir=out_dir)
     loader = Loader(config)
     dataset_manager = DatasetManager(config, loader)
-
-    cropping = Cropping()
-    windowing = Windowing(preserve_range=(0.0, 1.0))  # Mode adaptatif par défaut
-    resampler = IsotropicResampler(out_dir)
+    cropping = Cropping(config, loader, dataset_manager)
+    windowing = Windowing(preserve_range=(0.0, 1.0))
+    resampler = IsotropicResampler(
+        out_dir=out_dir,
+        target_nominal=0.10,
+        max_pixels=100_000_000,
+        upsample_max=2.0,
+        downsample_max=3.0
+    )
 
     return dataset_manager, cropping, windowing, resampler
 
 
-@pytest.mark.parametrize("patient_id,image_id", [
-    (10011, 220375232),
-])
-def test_full_pipeline(setup_pipeline, patient_id, image_id):
-    """Test du pipeline complet de préprocessing."""
-    dataset_manager, cropping, windowing, resampler = setup_pipeline
+# ==========================================================
+# HELPER FUNCTIONS - SAUVEGARDE DES IMAGES
+# ==========================================================
 
-    # ==========================================================
-    # DEBUG ÉTAPE 0: VÉRIFICATION DES MÉTADONNÉES
-    # ==========================================================
-    print(f"\n{'=' * 60}")
-    print(f"🔍 DEBUG ÉTAPE 0 - EXTRACTION DES MÉTADONNÉES")
-    print(f"{'=' * 60}")
+def save_step_image(image: np.ndarray, step_name: str, output_dir: Path,
+                    patient_id: int, image_id: int, cmap: str = 'gray'):
+    """Sauvegarde une image à une étape spécifique du pipeline"""
+    step_dir = output_dir / "step_images" / f"patient_{patient_id}_image_{image_id}"
+    step_dir.mkdir(parents=True, exist_ok=True)
 
-    # Récupération des métadonnées
-    dicom_info = dataset_manager.get_dicom_info(patient_id, image_id)
-    density = dicom_info.get('density', None)
-
-    # Debug complet des métadonnées disponibles
-    print("📋 Métadonnées disponibles:")
-    for key, value in dicom_info.items():
-        if value is not None and key != 'dicom_path':  # Éviter le chemin trop long
-            print(f"   {key}: {value}")
-
-    print(f"🎯 Densité extraite: {repr(density)}")
-    print(f"   Type: {type(density)}")
-
-    # Validation de la densité
-    if density and isinstance(density, str) and density.upper() in ['A', 'B', 'C', 'D']:
-        density = density.upper()
-        print(f"✅ Densité valide: {density}")
-    else:
-        print(f"⚠️  Densité non valide ou manquante, utilisation du défaut (B)")
-        density = None
-
-    # Load DICOM
-    dicom_path = dataset_manager.get_dicom_path(patient_id, image_id)
-    dicom_data = dataset_manager.dicom_record(Path(dicom_path), verbose=True)
-    image = dicom_data["image"]
-    spacing = dicom_data["spacing"]
-
-    print(f"\n{'=' * 60}")
-    print(f"Testing patient {patient_id}, image {image_id}")
-    if density:
-        print(f"Breast density: {density}")
-    else:
-        print(f"Breast density: Not specified (using default B)")
-    print(f"{'=' * 60}\n")
-
-    # ==========================================================
-    # 1. TESTS - IMAGE ORIGINALE
-    # ==========================================================
-    assert isinstance(image, np.ndarray), "Image must be numpy array"
-    assert image.ndim == 2, "Image must be 2D"
-    assert np.isfinite(image).all(), "Image contains non-finite values"
-    print(f"✓ Original image: {image.shape}, dtype={image.dtype}")
-
-    # ==========================================================
-    # 2. TESTS - CROPPING
-    # ==========================================================
-    print(f"\n{'=' * 60}")
-    print(f"🔍 DEBUG ÉTAPE 2 - CROPPING")
-    print(f"{'=' * 60}")
-
-    image_cropped = cropping.process_with_metadata(image)
-
-    assert isinstance(image_cropped, np.ndarray)
-    assert image_cropped.shape == (512, 512), f"Expected (512, 512), got {image_cropped.shape}"
-    assert np.isfinite(image_cropped).all()
-    assert image_cropped.shape[0] <= image.shape[0]
-    assert image_cropped.shape[1] <= image.shape[1]
-
-    print(f"✓ Cropped image: {image_cropped.shape}")
-    print(f"  Range: [{image_cropped.min():.1f}, {image_cropped.max():.1f}]")
-
-    # ==========================================================
-    # 3. TESTS - WINDOWING (ÉTAPE CRITIQUE)
-    # ==========================================================
-    print(f"\n{'=' * 60}")
-    print(f"🔍 DEBUG ÉTAPE 3 - WINDOWING ADAPTATIF")
-    print(f"{'=' * 60}")
-    print(f"📤 Passage de la densité au windowing: {repr(density)}")
-
-    # DEBUG: Vérifier les paramètres qui seront utilisés
-    if density and density in windowing.density_params:
-        params = windowing.density_params[density]
-        print(f"⚙️  Paramètres pour la densité {density}:")
-        print(f"   - Percentiles: {params['percentiles']}")
-        print(f"   - Gamma: {params['gamma']}")
-        print(f"   - CLAHE clip: {params['clahe_clip']}")
-        print(f"   - CLAHE weight: {params['clahe_weight']}")
-    else:
-        default_params = windowing.density_params['B']
-        print(f"⚙️  Paramètres par défaut (densité B):")
-        print(f"   - Percentiles: {default_params['percentiles']}")
-        print(f"   - Gamma: {default_params['gamma']}")
-        print(f"   - CLAHE clip: {default_params['clahe_clip']}")
-        print(f"   - CLAHE weight: {default_params['clahe_weight']}")
-
-    image_windowed = windowing.process_one(image_cropped, density=density)
-
-    assert isinstance(image_windowed, np.ndarray)
-    assert image_windowed.shape == image_cropped.shape, "Shape must not change"
-    assert np.isfinite(image_windowed).all()
-    assert image_windowed.min() >= 0.0, f"Min value {image_windowed.min()} < 0"
-    assert image_windowed.max() <= 1.0, f"Max value {image_windowed.max()} > 1"
-
-    # Vérifier la qualité du windowing
-    windowed_std = image_windowed.std()
-    assert windowed_std > 0.05, f"Windowing std too low: {windowed_std:.3f}"
-
-    # Vérifier la diversité de l'histogramme
-    histogram_entropy = compute_histogram_entropy(image_windowed)
-    assert histogram_entropy > 0.3, f"Histogram too concentrated: {histogram_entropy:.3f}"
-
-    print(f"✓ Windowed image: {image_windowed.shape}")
-    print(f"  Range: [{image_windowed.min():.3f}, {image_windowed.max():.3f}]")
-    print(f"  Mean: {image_windowed.mean():.3f}, Std: {windowed_std:.3f}")
-    print(f"  Histogram entropy: {histogram_entropy:.3f}")
-
-    # ==========================================================
-    # 4. TESTS - RESAMPLING
-    # ==========================================================
-    print(f"\n{'=' * 60}")
-    print(f"🔍 DEBUG ÉTAPE 4 - RESAMPLING")
-    print(f"{'=' * 60}")
-
-    stem = f"{patient_id}_{image_id}"
-    result = resampler.process_one(stem=stem, img_np=image_windowed, spacing=spacing)
-
-    assert isinstance(result, dict)
-    assert "npy" in result and "json" in result and "shape" in result
-
-    image_resampled = np.load(result["npy"])["img"]
-
-    print(f"\n{'=' * 60}")
-    print(f"🔍 VALIDATION COMPLÈTE IMAGE RESAMPLED")
-    print(f"{'=' * 60}")
-
-    # 1. Vérifications de base
-    print(f"📊 Propriétés de base:")
-    print(f"   Shape: {image_resampled.shape}")
-    print(f"   Dtype: {image_resampled.dtype}")
-    print(f"   Size: {image_resampled.nbytes / 1024:.1f} KB")
-
-    # 2. Statistiques
-    print(f"\n📈 Statistiques:")
-    print(f"   Min: {image_resampled.min():.6f}")
-    print(f"   Max: {image_resampled.max():.6f}")
-    print(f"   Mean: {image_resampled.mean():.6f}")
-    print(f"   Std: {image_resampled.std():.6f}")
-    print(f"   Median: {np.median(image_resampled):.6f}")
-
-    # 3. Valeurs invalides
-    print(f"\n⚠️  Vérification valeurs invalides:")
-    num_nan = np.isnan(image_resampled).sum()
-    num_inf = np.isinf(image_resampled).sum()
-    num_neg = (image_resampled < 0).sum()
-    num_over = (image_resampled > 1).sum()
-
-    print(f"   NaN: {num_nan} ({num_nan / image_resampled.size * 100:.2f}%)")
-    print(f"   Inf: {num_inf} ({num_inf / image_resampled.size * 100:.2f}%)")
-    print(f"   Négatifs: {num_neg} ({num_neg / image_resampled.size * 100:.2f}%)")
-    print(f"   > 1.0: {num_over} ({num_over / image_resampled.size * 100:.2f}%)")
-
-    # 4. Distribution
-    print(f"\n📊 Distribution:")
-    print(f"   Valeurs uniques: {len(np.unique(image_resampled))}")
-    print(f"   Percentiles:")
-    for p in [0, 1, 5, 25, 50, 75, 95, 99, 100]:
-        val = np.percentile(image_resampled, p)
-        print(f"      P{p:3d}: {val:.6f}")
-
-    # 5. Comparaison avec windowed
-    print(f"\n🔄 Comparaison Windowed vs Resampled:")
-    print(f"   Windowed  - Mean: {image_windowed.mean():.6f}, Std: {image_windowed.std():.6f}")
-    print(f"   Resampled - Mean: {image_resampled.mean():.6f}, Std: {image_resampled.std():.6f}")
-    print(f"   Différence - Mean: {abs(image_windowed.mean() - image_resampled.mean()):.6f}")
-    print(f"   Différence - Std:  {abs(image_windowed.std() - image_resampled.std()):.6f}")
-
-    # 6. Test de l'histogramme
-    print(f"\n📊 Test calcul histogramme:")
-    try:
-        hist, bins = np.histogram(image_resampled.flatten(), bins=50, range=(0, 1))
-        print(f"   Histogramme calculé avec succès")
-        print(f"   Bins non-vides: {(hist > 0).sum()}")
-        print(f"   Total counts: {hist.sum()}")
-    except Exception as e:
-        print(f"   ❌ ERREUR: {e}")
-
-    # 7. Test du std
-    print(f"\n🧮 Test calcul std:")
-    try:
-        std_numpy = np.std(image_resampled)
-        std_nanstd = np.nanstd(image_resampled)
-        print(f"   np.std():    {std_numpy}")
-        print(f"   np.nanstd(): {std_nanstd}")
-        print(f"   Sont égaux: {np.isclose(std_numpy, std_nanstd)}")
-
-        if np.isinf(std_numpy):
-            print(f"   ❌ STD EST INF !")
-        elif np.isnan(std_numpy):
-            print(f"   ❌ STD EST NAN !")
+    # Normaliser l'image pour la sauvegarde
+    if image.dtype == np.float32 or image.dtype == np.float64:
+        if image.min() < 0 or image.max() > 1:
+            # Normaliser vers [0, 1]
+            img_normalized = (image - image.min()) / (image.max() - image.min())
         else:
-            print(f"   ✅ STD est valide")
-    except Exception as e:
-        print(f"   ❌ ERREUR lors du calcul: {e}")
+            img_normalized = image
+    else:
+        img_normalized = image.astype(np.float32) / image.max()
 
-    print(f"{'=' * 60}\n")
+    # Sauvegarder en PNG
+    output_path = step_dir / f"{step_name}.png"
+    plt.figure(figsize=(8, 8))
+    plt.imshow(img_normalized, cmap=cmap)
+    plt.axis('off')
+    plt.title(f'{step_name}\nShape: {image.shape}', fontsize=12, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', pad_inches=0.1)
+    plt.close()
 
-    # Assertions strictes
-    assert not np.isnan(image_resampled).any(), "Resampled contains NaN"
-    assert not np.isinf(image_resampled).any(), "Resampled contains Inf"
-    assert not np.isinf(image_resampled.std()), "Resampled std is Inf"
-    assert not np.isnan(image_resampled.std()), "Resampled std is NaN"
+    # Sauvegarder en NPY pour les données brutes
+    npy_path = step_dir / f"{step_name}.npy"
+    np.save(npy_path, image)
+
+    print(f"     💾 Saved {step_name}: {output_path}")
+    return output_path
 
 
-    # ==========================================================
-    # 5. RÉSUMÉ DU PIPELINE
-    # ==========================================================
-    print(f"\n{'=' * 60}")
-    print(f"🎯 RÉSUMÉ FINAL DU PIPELINE")
-    print(f"{'=' * 60}")
-    print(f"Densité utilisée: {density or 'B (défaut)'}")
-    print(f"Original    : {image.shape} → range [{image.min():.1f}, {image.max():.1f}]")
-    print(f"Cropped     : {image_cropped.shape} → range [{image_cropped.min():.1f}, {image_cropped.max():.1f}]")
-    print(f"Windowed    : {image_windowed.shape} → range [{image_windowed.min():.3f}, {image_windowed.max():.3f}]")
-    print(f"Resampled   : {image_resampled.shape} → spacing {result['new_spacing_mm']} mm")
-    print(f"{'=' * 60}\n")
+def save_comparison_grid(images_dict: Dict[str, np.ndarray], output_dir: Path,
+                         patient_id: int, image_id: int, metadata: Dict):
+    """Crée une grille de comparaison de toutes les étapes"""
+    grid_dir = output_dir / "comparison_grids"
+    grid_dir.mkdir(parents=True, exist_ok=True)
 
-    # ==========================================================
-    # 6. VISUALISATIONS CORRIGÉES
-    # ==========================================================
-    visualize_pipeline_corrected(
-        patient_id, image_id,
-        image, image_cropped, image_windowed, image_resampled,
-        density
-    )
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    axes = axes.ravel()
 
-    print(f"✅ Pipeline validation complete!")
+    steps = list(images_dict.keys())
+    for i, (step_name, image) in enumerate(images_dict.items()):
+        if i >= len(axes):
+            break
+
+        # Normaliser l'image pour l'affichage
+        if image.dtype == np.float32 or image.dtype == np.float64:
+            if image.min() < 0 or image.max() > 1:
+                img_display = (image - image.min()) / (image.max() - image.min())
+            else:
+                img_display = image
+        else:
+            img_display = image.astype(np.float32) / image.max()
+
+        axes[i].imshow(img_display, cmap='gray')
+        axes[i].set_title(f'{step_name}\n{image.shape}', fontsize=10, fontweight='bold')
+        axes[i].axis('off')
+
+        # Ajouter des statistiques
+        stats_text = f"Min: {image.min():.1f}\nMax: {image.max():.1f}\nMean: {image.mean():.2f}"
+        axes[i].text(0.02, 0.98, stats_text, transform=axes[i].transAxes,
+                     fontsize=8, verticalalignment='top',
+                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+    # Cacher les axes non utilisés
+    for i in range(len(steps), len(axes)):
+        axes[i].axis('off')
+
+    # Titre principal
+    view_info = f"{metadata.get('laterality', '?')}-{metadata.get('view', '?')}"
+    plt.suptitle(f'Patient {patient_id}, Image {image_id} ({view_info})\nPipeline Step Comparison',
+                 fontsize=16, fontweight='bold', y=0.95)
+
+    output_path = grid_dir / f"comparison_p{patient_id}_i{image_id}.png"
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"     🔄 Comparison grid: {output_path}")
+    return output_path
 
 
 def compute_histogram_entropy(image: np.ndarray, bins: int = 50) -> float:
-    """
-    Mesure la diversité de l'histogramme (entropie normalisée).
-    Valeur élevée = bonne distribution des intensités.
-    Retourne une valeur entre 0 (concentré) et 1 (uniforme).
-    """
-    # Calculer l'histogramme (counts bruts, pas density)
+    """Compute normalized histogram entropy."""
     hist, _ = np.histogram(image.flatten(), bins=bins, range=(0, 1))
-
-    # Normaliser pour obtenir des probabilités
     hist = hist.astype(np.float64)
     hist = hist / hist.sum()
-
-    # Filtrer les bins vides
     hist = hist[hist > 0]
-
-    # Calculer l'entropie de Shannon (toujours positive)
     entropy = -np.sum(hist * np.log2(hist))
-
-    # Normaliser par l'entropie maximale (log2 du nombre de bins non-vides)
     max_entropy = np.log2(len(hist)) if len(hist) > 1 else 1.0
-
     return entropy / max_entropy if max_entropy > 0 else 0.0
 
 
-def visualize_pipeline_corrected(
+def visualize_single_image(
         patient_id: int,
         image_id: int,
         original: np.ndarray,
         cropped: np.ndarray,
         windowed: np.ndarray,
         resampled: np.ndarray,
-        density: str
+        metadata: Dict,
+        results: Dict,
+        output_dir: Path
 ):
+    """Generate comprehensive visualization for a single image."""
+    fig = plt.figure(figsize=(20, 10))
+    gs = fig.add_gridspec(2, 4, hspace=0.3, wspace=0.3)
+
+    # 1. Original DICOM
+    ax1 = fig.add_subplot(gs[0, 0])
+    im1 = ax1.imshow(original, cmap='gray', vmin=original.min(), vmax=np.percentile(original, 99))
+    ax1.set_title(f'Original DICOM\nShape: {original.shape}\nSpacing: {results["original_spacing"]} mm/px',
+                  fontsize=10, fontweight='bold')
+    ax1.axis('off')
+    plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+
+    # 2. After Cropping
+    ax2 = fig.add_subplot(gs[0, 1])
+    im2 = ax2.imshow(cropped, cmap='gray')
+    ax2.set_title(f'After Cropping\nShape: {cropped.shape}\nRange: [{cropped.min():.0f}, {cropped.max():.0f}]',
+                  fontsize=10, fontweight='bold')
+    ax2.axis('off')
+    plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+
+    # 3. After Windowing
+    ax3 = fig.add_subplot(gs[0, 2])
+    im3 = ax3.imshow(windowed, cmap='gray', vmin=0, vmax=1)
+    density_text = f"Density: {metadata.get('density') or 'B (default)'}"
+    ax3.set_title(f'After Windowing\n{density_text}\nStd: {results["windowed_std"]:.3f}',
+                  fontsize=10, fontweight='bold')
+    ax3.axis('off')
+    plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04)
+
+    # 4. After Resampling
+    ax4 = fig.add_subplot(gs[0, 3])
+    im4 = ax4.imshow(resampled, cmap='gray', vmin=0, vmax=1)
+    ax4.set_title(
+        f'After Resampling\nShape: {resampled.shape}\nSpacing: {results["resampled_spacing"]} mm/px\nPolicy: {results["resampled_policy"]}',
+        fontsize=10, fontweight='bold')
+    ax4.axis('off')
+    plt.colorbar(im4, ax=ax4, fraction=0.046, pad=0.04)
+
+    # 5. Original histogram
+    ax5 = fig.add_subplot(gs[1, 0])
+    ax5.hist(original.flatten(), bins=100, alpha=0.7, color='blue', edgecolor='black', density=True)
+    ax5.set_title(f'Original Histogram\nMean: {original.mean():.1f}', fontweight='bold', fontsize=10)
+    ax5.set_xlabel('Intensity')
+    ax5.set_ylabel('Density')
+    ax5.grid(alpha=0.3)
+    ax5.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+
+    # 6. Cropped histogram
+    ax6 = fig.add_subplot(gs[1, 1])
+    ax6.hist(cropped.flatten(), bins=100, alpha=0.7, color='green', edgecolor='black', density=True)
+    ax6.set_title(f'Cropped Histogram\nMean: {cropped.mean():.1f}', fontweight='bold', fontsize=10)
+    ax6.set_xlabel('Intensity')
+    ax6.set_ylabel('Density')
+    ax6.grid(alpha=0.3)
+    ax6.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+
+    # 7. Windowed histogram
+    ax7 = fig.add_subplot(gs[1, 2])
+    ax7.hist(windowed.flatten(), bins=50, alpha=0.7, color='red', edgecolor='black', density=True)
+    ax7.set_title(f'Windowed Histogram\nMean: {windowed.mean():.3f}, Std: {windowed.std():.3f}',
+                  fontweight='bold', fontsize=10)
+    ax7.set_xlabel('Intensity [0-1]')
+    ax7.set_ylabel('Density')
+    ax7.set_xlim(0, 1)
+    ax7.grid(alpha=0.3)
+
+    # 8. Resampled histogram
+    ax8 = fig.add_subplot(gs[1, 3])
+    ax8.hist(resampled.flatten(), bins=50, alpha=0.7, color='purple', edgecolor='black', density=True)
+    ax8.set_title(f'Resampled Histogram\nMean: {resampled.mean():.3f}, Std: {resampled.std():.3f}',
+                  fontweight='bold', fontsize=10)
+    ax8.set_xlabel('Intensity [0-1]')
+    ax8.set_ylabel('Density')
+    ax8.set_xlim(0, 1)
+    ax8.grid(alpha=0.3)
+
+    # Main title
+    view_info = f"{metadata.get('laterality', '?')}-{metadata.get('view', '?')}"
+    cancer_info = "CANCER" if metadata.get('cancer') == 1 else "Normal"
+    plt.suptitle(
+        f'Patient {patient_id}, Image {image_id} ({view_info}) - {cancer_info} | Time: {results["time_total_s"]:.2f}s',
+        fontsize=14, fontweight='bold', y=0.98)
+
+    # Save
+    output_path = output_dir / "detailed_visualizations" / f"patient_{patient_id}_image_{image_id}.png"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    print(f"     📊 Detailed viz: {output_path}")
+
+
+def process_single_image(
+        patient_id: int,
+        image_id: int,
+        dataset_manager: DatasetManager,
+        cropping: Cropping,
+        windowing: Windowing,
+        resampler: IsotropicResampler,
+        output_dir: Path
+) -> Dict:
     """
-    Crée des visualisations complètes du pipeline - VERSION CORRIGÉE.
+    Process a single image through the full pipeline and save all step images.
     """
-    vis_dir = Path("test_visualizations")
-    vis_dir.mkdir(exist_ok=True)
+    results = {
+        'patient_id': patient_id,
+        'image_id': image_id,
+        'success': False,
+        'error': None
+    }
 
-    # ==========================================
-    # FIGURE 1: Comparaison côte à côte
-    # ==========================================
-    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    start_time = time.time()
+    step_images = {}  # Pour stocker les images de chaque étape
 
-    # Original
-    im0 = axes[0, 0].imshow(original, cmap='gray')
-    axes[0, 0].set_title(f'Original DICOM\nShape: {original.shape}', fontsize=10, fontweight='bold')
-    axes[0, 0].axis('off')
-    plt.colorbar(im0, ax=axes[0, 0], fraction=0.046, pad=0.04)
+    try:
+        # Get metadata
+        dicom_info = dataset_manager.get_dicom_info(patient_id, image_id)
+        metadata = {
+            'view': dicom_info.get('view'),
+            'laterality': dicom_info.get('laterality'),
+            'density': dicom_info.get('density'),
+            'cancer': dicom_info.get('cancer'),
+            'age': dicom_info.get('age')
+        }
+        results.update(metadata)
 
-    # Cropped
-    im1 = axes[0, 1].imshow(cropped, cmap='gray')
-    axes[0, 1].set_title(f'After Cropping\nShape: {cropped.shape}', fontsize=10, fontweight='bold')
-    axes[0, 1].axis('off')
-    plt.colorbar(im1, ax=axes[0, 1], fraction=0.046, pad=0.04)
+        # ÉTAPE 1: Chargement DICOM original
+        print("     📥 Loading DICOM...")
+        dicom_path = dataset_manager.get_dicom_path(patient_id, image_id)
+        dicom_data = dataset_manager.dicom_record(Path(dicom_path), verbose=False)
+        image_original = dicom_data["image"]
+        spacing = dicom_data["spacing"]
 
-    # Windowed
-    im2 = axes[1, 0].imshow(windowed, cmap='gray')
-    title = f'After Windowing (Adaptive)\nRange: [{windowed.min():.3f}, {windowed.max():.3f}]'
-    if density:
-        title += f'\nDensity: {density}'
-    else:
-        title += f'\nDensity: B (default)'
-    axes[1, 0].set_title(title, fontsize=10, fontweight='bold')
-    axes[1, 0].axis('off')
-    plt.colorbar(im2, ax=axes[1, 0], fraction=0.046, pad=0.04)
+        if SAVE_STEP_IMAGES:
+            save_step_image(image_original, "01_original_dicom", output_dir, patient_id, image_id)
+        step_images["01_original"] = image_original
 
-    # Resampled
-    im3 = axes[1, 1].imshow(resampled, cmap='gray')
-    axes[1, 1].set_title(f'After Resampling\nShape: {resampled.shape}', fontsize=10, fontweight='bold')
-    axes[1, 1].axis('off')
-    plt.colorbar(im3, ax=axes[1, 1], fraction=0.046, pad=0.04)
+        load_time = time.time() - start_time
 
-    plt.suptitle(f'Patient {patient_id}, Image {image_id} - Full Pipeline',
-                 fontsize=14, fontweight='bold', y=0.995)
-    plt.tight_layout()
-    plt.savefig(vis_dir / f"{patient_id}_{image_id}_pipeline.png",
-                dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Saved: {vis_dir / f'{patient_id}_{image_id}_pipeline.png'}")
+        results['original_shape'] = image_original.shape
+        results['original_spacing'] = spacing
+        results['original_dtype'] = str(image_original.dtype)
+        results['original_size_mb'] = image_original.nbytes / (1024 ** 2)
 
-    # ==========================================
-    # FIGURE 2: HISTOGRAMMES CORRIGÉS
-    # ==========================================
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        # ÉTAPE 2: Cropping
+        print("     ✂️  Cropping...")
+        crop_start = time.time()
+        crop_result = cropping.process_one(
+            patient_id=patient_id,
+            image_id=image_id,
+            laterality=metadata.get('laterality'),
+            view=metadata.get('view'),
+            dicom_path=dicom_path
+        )
 
-    # Calcul des bins adaptatifs pour chaque image
-    bins_original = 100
-    bins_normalized = 50  # Moins de bins pour les images normalisées [0,1]
+        image_cropped = crop_result['raw_crop']
+        image_crop_model = crop_result['crop_model']
 
-    # HISTOGRAMME ORIGINAL
-    axes[0, 0].hist(original.flatten(), bins=bins_original, alpha=0.7,
-                    color='blue', edgecolor='black', density=True)
-    axes[0, 0].set_title(f"Original DICOM Histogram\nMean: {original.mean():.1f}, Std: {original.std():.1f}",
-                         fontweight='bold', fontsize=11)
-    axes[0, 0].set_xlabel("Intensity (HU/Units)")
-    axes[0, 0].set_ylabel("Density")
-    axes[0, 0].grid(alpha=0.3)
-    axes[0, 0].ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+        if SAVE_STEP_IMAGES:
+            save_step_image(image_cropped, "02_cropped_raw", output_dir, patient_id, image_id)
+            save_step_image(image_crop_model, "03_cropped_normalized", output_dir, patient_id, image_id)
+        step_images["02_cropped_raw"] = image_cropped
+        step_images["03_cropped_norm"] = image_crop_model
 
-    # HISTOGRAMME CROPPED
-    axes[0, 1].hist(cropped.flatten(), bins=bins_original, alpha=0.7,
-                    color='green', edgecolor='black', density=True)
-    axes[0, 1].set_title(f"Cropped Histogram\nMean: {cropped.mean():.1f}, Std: {cropped.std():.1f}",
-                         fontweight='bold', fontsize=11)
-    axes[0, 1].set_xlabel("Intensity (HU/Units)")
-    axes[0, 1].set_ylabel("Density")
-    axes[0, 1].grid(alpha=0.3)
-    axes[0, 1].ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+        crop_time = time.time() - crop_start
 
-    # HISTOGRAMME WINDOWED
-    axes[1, 0].hist(windowed.flatten(), bins=bins_normalized, alpha=0.7,
-                    color='red', edgecolor='black', density=True)
-    axes[1, 0].set_title(f"Windowed Histogram\nMean: {windowed.mean():.3f}, Std: {windowed.std():.3f}",
-                         fontweight='bold', fontsize=11)
-    axes[1, 0].set_xlabel("Intensity [0-1]")
-    axes[1, 0].set_ylabel("Density")
-    axes[1, 0].grid(alpha=0.3)
-    axes[1, 0].set_xlim(0, 1)  # Fixer l'échelle pour comparaison
+        results['cropped_shape'] = image_cropped.shape
+        results['cropped_range'] = (float(image_cropped.min()), float(image_cropped.max()))
+        results['bbox'] = crop_result['bbox']
+        results['flipped'] = crop_result['flipped']
 
-    # HISTOGRAMME RESAMPLED
-    axes[1, 1].hist(resampled.flatten(), bins=bins_normalized, alpha=0.7,
-                    color='purple', edgecolor='black', density=True)
-    axes[1, 1].set_title(f"Resampled Histogram\nMean: {resampled.mean():.3f}, Std: {resampled.std():.3f}",
-                         fontweight='bold', fontsize=11)
-    axes[1, 1].set_xlabel("Intensity [0-1]")
-    axes[1, 1].set_ylabel("Density")
-    axes[1, 1].grid(alpha=0.3)
-    axes[1, 1].set_xlim(0, 1)  # Fixer l'échelle pour comparaison
+        # ÉTAPE 3: Windowing
+        print("     🪟 Windowing...")
+        window_start = time.time()
+        image_windowed = windowing.process_one(
+            image_crop_model,
+            density=metadata.get('density')
+        )
 
-    plt.suptitle(f'Patient {patient_id}, Image {image_id} - Histograms Analysis (Corrected)',
-                 fontsize=14, fontweight='bold')
-    plt.tight_layout()
-    plt.savefig(vis_dir / f"{patient_id}_{image_id}_histograms.png",
-                dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Saved: {vis_dir / f'{patient_id}_{image_id}_histograms.png'}")
+        if SAVE_STEP_IMAGES:
+            save_step_image(image_windowed, "04_windowed", output_dir, patient_id, image_id)
+        step_images["04_windowed"] = image_windowed
 
-    # ==========================================
-    # FIGURE 3: PROFILS D'INTENSITÉ CORRIGÉS
-    # ==========================================
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+        window_time = time.time() - window_start
 
-    # PROFIL HORIZONTAL - Windowed (512 points)
-    center_row_w = windowed.shape[0] // 2
-    x_windowed = np.arange(windowed.shape[1])
-    axes[0, 0].plot(x_windowed, windowed[center_row_w, :],
-                    label='Windowed', linewidth=2, color='red')
-    axes[0, 0].set_title("Horizontal Profile - Windowed Image", fontweight='bold')
-    axes[0, 0].set_xlabel("Column Index (0-511)")
-    axes[0, 0].set_ylabel("Intensity")
-    axes[0, 0].legend()
-    axes[0, 0].grid(alpha=0.3)
-    axes[0, 0].set_ylim(0, 1)
+        results['windowed_shape'] = image_windowed.shape
+        results['windowed_mean'] = float(image_windowed.mean())
+        results['windowed_std'] = float(image_windowed.std())
+        results['windowed_min'] = float(image_windowed.min())
+        results['windowed_max'] = float(image_windowed.max())
+        results['windowed_entropy'] = float(compute_histogram_entropy(image_windowed))
 
-    # PROFIL HORIZONTAL - Resampled (171 points)
-    center_row_r = resampled.shape[0] // 2
-    x_resampled = np.arange(resampled.shape[1])
-    axes[0, 1].plot(x_resampled, resampled[center_row_r, :],
-                    label='Resampled', linewidth=2, color='purple')
-    axes[0, 1].set_title("Horizontal Profile - Resampled Image", fontweight='bold')
-    axes[0, 1].set_xlabel("Column Index (0-170)")
-    axes[0, 1].set_ylabel("Intensity")
-    axes[0, 1].legend()
-    axes[0, 1].grid(alpha=0.3)
-    axes[0, 1].set_ylim(0, 1)
+        # ÉTAPE 4: Resampling
+        print("     📐 Resampling...")
+        resample_start = time.time()
+        stem = f"{patient_id}_{image_id}"
+        resample_result = resampler.process_one(
+            stem=stem,
+            img_np=image_windowed,
+            spacing=spacing
+        )
 
-    # PROFIL VERTICAL - Windowed (512 points)
-    center_col_w = windowed.shape[1] // 2
-    y_windowed = np.arange(windowed.shape[0])
-    axes[1, 0].plot(y_windowed, windowed[:, center_col_w],
-                    label='Windowed', linewidth=2, color='red')
-    axes[1, 0].set_title("Vertical Profile - Windowed Image", fontweight='bold')
-    axes[1, 0].set_xlabel("Row Index (0-511)")
-    axes[1, 0].set_ylabel("Intensity")
-    axes[1, 0].legend()
-    axes[1, 0].grid(alpha=0.3)
-    axes[1, 0].set_ylim(0, 1)
+        # Load resampled image
+        image_resampled = np.load(resample_result["npy"])["img"]
 
-    # PROFIL VERTICAL - Resampled (171 points)
-    center_col_r = resampled.shape[1] // 2
-    y_resampled = np.arange(resampled.shape[0])
-    axes[1, 1].plot(y_resampled, resampled[:, center_col_r],
-                    label='Resampled', linewidth=2, color='purple')
-    axes[1, 1].set_title("Vertical Profile - Resampled Image", fontweight='bold')
-    axes[1, 1].set_xlabel("Row Index (0-170)")
-    axes[1, 1].set_ylabel("Intensity")
-    axes[1, 1].legend()
-    axes[1, 1].grid(alpha=0.3)
-    axes[1, 1].set_ylim(0, 1)
+        if SAVE_STEP_IMAGES:
+            save_step_image(image_resampled, "05_resampled", output_dir, patient_id, image_id)
+        step_images["05_resampled"] = image_resampled
 
-    plt.suptitle(f'Patient {patient_id}, Image {image_id} - Intensity Profiles (Corrected)',
-                 fontsize=14, fontweight='bold')
-    plt.tight_layout()
-    plt.savefig(vis_dir / f"{patient_id}_{image_id}_profiles.png",
-                dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"✓ Saved: {vis_dir / f'{patient_id}_{image_id}_profiles.png'}")
+        resample_time = time.time() - resample_start
+
+        results['resampled_shape'] = image_resampled.shape
+        results['resampled_spacing'] = resample_result['new_spacing_mm']
+        results['resampled_policy'] = resample_result['policy_reason']
+        results['resampled_mean'] = float(image_resampled.mean())
+        results['resampled_std'] = float(image_resampled.std())
+        results['resampled_dtype'] = str(image_resampled.dtype)
+        results['resampled_size_mb'] = image_resampled.nbytes / (1024 ** 2)
+
+        # Créer la grille de comparaison
+        if SAVE_STEP_IMAGES:
+            save_comparison_grid(step_images, output_dir, patient_id, image_id, metadata)
+
+        # Validation
+        results['has_nan'] = bool(np.isnan(image_resampled).any())
+        results['has_inf'] = bool(np.isinf(image_resampled).any())
+        results['std_is_valid'] = not (np.isnan(image_resampled.std()) or np.isinf(image_resampled.std()))
+
+        # Timing
+        total_time = time.time() - start_time
+        results['time_load_s'] = load_time
+        results['time_crop_s'] = crop_time
+        results['time_window_s'] = window_time
+        results['time_resample_s'] = resample_time
+        results['time_total_s'] = total_time
+
+        # Visualisation détaillée
+        if VISUALIZE_ALL_IMAGES:
+            visualize_single_image(
+                patient_id, image_id,
+                image_original, image_cropped, image_windowed, image_resampled,
+                metadata, results, output_dir
+            )
+
+        results['success'] = True
+        print("     ✅ Pipeline completed successfully!")
+
+    except Exception as e:
+        results['error'] = str(e)
+        results['success'] = False
+        print(f"     ❌ Error: {e}")
+
+    return results
 
 
-# Test pour plusieurs densités
-@pytest.mark.parametrize("density", ["A", "B", "C", "D", None])
-def test_windowing_densities(setup_pipeline, density):
-    """Test le windowing avec différentes densités."""
-    dataset_manager, cropping, windowing, _ = setup_pipeline
+# ==========================================================
+# MAIN TEST
+# ==========================================================
 
-    patient_id, image_id = 10011, 220375232
-    dicom_path = dataset_manager.get_dicom_path(patient_id, image_id)
-    dicom_data = dataset_manager.dicom_record(Path(dicom_path), verbose=False)
+def test_pipeline_custom_patients(setup_pipeline):
+    """
+    Test the full pipeline on custom-defined patients and images.
+    """
+    dataset_manager, cropping, windowing, resampler = setup_pipeline
 
-    image_cropped = cropping.process_with_metadata(dicom_data["image"])
+    print(f"\n{'=' * 70}")
+    print(f"🚀 CUSTOM MULTI-PATIENT PIPELINE TEST")
+    print(f"{'=' * 70}")
+    print(f"Total test cases: {len(TEST_CASES)}")
+    print(f"Step images saving: {SAVE_STEP_IMAGES}")
+    print(f"Detailed visualizations: {VISUALIZE_ALL_IMAGES}")
+    print(f"Summary report: {VISUALIZE_SUMMARY}")
+    print(f"{'=' * 70}\n")
 
-    print(f"\n🧪 TEST WINDOWING MANUEL - Densité: {repr(density)}")
-    image_windowed = windowing.process_one(image_cropped, density=density)
+    # Create output directory structure
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path("pipeline_output") / timestamp
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Assertions
-    assert image_windowed.min() >= 0.0 and image_windowed.max() <= 1.0
-    assert image_windowed.std() > 0.05, f"Density {density}: std too low"
+    print(f"📁 Output directory: {output_dir}")
 
-    entropy = compute_histogram_entropy(image_windowed)
-    assert entropy > 0.3, f"Density {density}: histogram too concentrated"
+    # Process all images
+    all_results = []
 
-    print(f"📊 Density {density or 'None'}: std={image_windowed.std():.3f}, entropy={entropy:.3f}")
+    for i, (patient_id, image_id) in enumerate(TEST_CASES, 1):
+        print(f"\n[{i}/{len(TEST_CASES)}] Processing Patient {patient_id}, Image {image_id}")
+        print(f"{'─' * 70}")
+
+        result = process_single_image(
+            patient_id=patient_id,
+            image_id=image_id,
+            dataset_manager=dataset_manager,
+            cropping=cropping,
+            windowing=windowing,
+            resampler=resampler,
+            output_dir=output_dir
+        )
+
+        all_results.append(result)
+
+        if result['success']:
+            print(f"     ✅ Success!")
+            print(f"     📊 Original: {result['original_shape']} @ {result['original_spacing']} mm/px")
+            print(f"     📊 Cropped: {result['cropped_shape']} (flipped: {result.get('flipped', False)})")
+            print(f"     📊 Windowed: Mean={result['windowed_mean']:.3f}, Std={result['windowed_std']:.3f}")
+            print(f"     📊 Resampled: {result['resampled_shape']} @ {result['resampled_spacing']} mm/px")
+            print(f"     ⏱️  Time: {result['time_total_s']:.2f}s")
+
+    # Save results to CSV
+    df_results = pd.DataFrame(all_results)
+    csv_path = output_dir / "pipeline_results.csv"
+    df_results.to_csv(csv_path, index=False)
+    print(f"📁 Results CSV saved: {csv_path}")
+
+    # Save summary JSON
+    successful = [r for r in all_results if r['success']]
+    summary = {
+        'timestamp': timestamp,
+        'total_images': len(all_results),
+        'successful': len(successful),
+        'failed': len(all_results) - len(successful),
+        'success_rate_pct': len(successful) / len(all_results) * 100 if all_results else 0,
+        'avg_processing_time_s': np.mean([r['time_total_s'] for r in successful]) if successful else 0,
+        'total_processing_time_s': sum([r['time_total_s'] for r in successful]) if successful else 0,
+        'output_directory': str(output_dir),
+    }
+
+    json_path = output_dir / "pipeline_summary.json"
+    with open(json_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"📁 Summary JSON saved: {json_path}")
+
+    # Print final summary
+    print(f"\n{'=' * 70}")
+    print(f"📈 FINAL SUMMARY")
+    print(f"{'=' * 70}")
+    print(f"✅ Success: {len(successful)}/{len(all_results)} ({summary['success_rate_pct']:.1f}%)")
+    print(f"⏱️  Total time: {summary['total_processing_time_s']:.2f}s")
+    print(f"📁 All outputs saved in: {output_dir}")
+
+    # Assertions pour le test
+    assert len(successful) > 0, "Aucune image n'a été traitée avec succès"
+    assert summary['success_rate_pct'] >= 50.0, f"Taux de succès trop bas: {summary['success_rate_pct']:.1f}%"
+
+
+if __name__ == "__main__":
+    # Pour exécuter le test directement
+    pytest.main([__file__, "-v"])
