@@ -1,132 +1,220 @@
-import torch
-import torch.nn as nn
 import cv2
 import numpy as np
-from typing import Optional, Dict, Union
+from typing import Optional
 
-class WindowingNet(nn.Module):
+
+class Windowing:
     """
-    Class dedicated to windowing mammography images.
-    SRP-compliant: only responsible for windowing logic.
-    Supports density-guided windowing, AI prediction, and fallback methods.
+    Windowing optimisé pour mammographies basé sur percentile adaptatif.
+    Méthode déterministe, rapide et efficace.
+
+    Pipeline: Percentile clipping → Gamma correction → CLAHE léger → Fusion
+
+    Usage:
+        windowing = Windowing()
+        img_windowed = windowing.process_one(img_cropped, density="B")
     """
 
-    def __init__(self, input_size: tuple = (512, 512)):
-        super().__init__()
-        self.input_size = input_size
-
-        # Lightweight encoder for feature extraction
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, 16, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(16, 32, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((8, 8))
-        )
-
-        # Head for predicting windowing parameters
-        self.param_predictor = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(64 * 8 * 8, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 4)  # center_offset, width_offset, gamma, density_logit
-        )
-
-        # Baseline lookup table for densities
-        self.density_baselines = {
-            'A': {'center': 0.35, 'width': 0.85, 'gamma': 1.0},
-            'B': {'center': 0.45, 'width': 0.70, 'gamma': 1.1},
-            'C': {'center': 0.55, 'width': 0.55, 'gamma': 1.3},
-            'D': {'center': 0.65, 'width': 0.40, 'gamma': 1.5}
-        }
-
-        # Fallback methods (purely on image array)
-        self.fallback_methods = {
-            'A': lambda x: self._clahe(x, clip_limit=1.5),
-            'B': lambda x: self._percentile(x, low=10, high=90),
-            'C': lambda x: self._percentile(x, low=20, high=85),
-            'D': lambda x: self._percentile(x, low=25, high=80)
-        }
-
-    def forward(self, x: torch.Tensor, density: Optional[str] = None) -> Dict[str, torch.Tensor]:
+    def __init__(self, preserve_range: tuple[float, float] = (0.0, 1.0)):
         """
-        Forward pass for windowing.
-        If density is provided, applies baseline + offset; else predicts full parameters.
+        Args:
+            preserve_range: Plage de sortie [min, max], par défaut [0, 1]
         """
-        features = self.encoder(x)
-        params = self.param_predictor(features)
+        self.preserve_range = preserve_range
 
-        center_offset = torch.sigmoid(params[:, 0:1]) * 0.3 - 0.15
-        width_offset = torch.sigmoid(params[:, 1:2]) * 0.4 - 0.2
-        gamma = torch.sigmoid(params[:, 2:3]) * 1.5 + 0.5
-        density_logits = params[:, 3:4]
-
-        if density is not None:
-            baseline = self._get_density_baseline(density)
-            center_norm = baseline['center'] + center_offset.squeeze()
-            width_norm = baseline['width'] + width_offset.squeeze()
-            gamma = gamma.squeeze()
-        else:
-            center_norm = torch.sigmoid(params[:, 0])
-            width_norm = torch.sigmoid(params[:, 1]) * 0.8 + 0.2
-            gamma = torch.sigmoid(params[:, 2]) * 1.5 + 0.5
-
-        windowed = self._apply_windowing(x, center_norm, width_norm, gamma)
-
-        return {
-            'windowed_image': windowed,
-            'params': {
-                'center': center_norm,
-                'width': width_norm,
-                'gamma': gamma,
-                'density_logit': density_logits
+        # Paramètres optimaux par densité mammaire
+        # Basés sur les caractéristiques physiques du tissu mammaire
+        self.density_params = {
+            'A': {  # Almost entirely fatty (tissu principalement graisseux)
+                'percentiles': (2.0, 98.0),  # Outliers modérés
+                'gamma': 0.9,  # Légère augmentation luminosité
+                'clahe_clip': 1.5,  # CLAHE doux
+                'clahe_weight': 0.25  # Faible poids CLAHE
+            },
+            'B': {  # Scattered fibroglandular (densité dispersée)
+                'percentiles': (1.0, 99.0),  # Outliers faibles
+                'gamma': 1.0,  # Pas de correction gamma
+                'clahe_clip': 2.0,  # CLAHE modéré
+                'clahe_weight': 0.30  # Poids modéré CLAHE
+            },
+            'C': {  # Heterogeneously dense (densité hétérogène)
+                'percentiles': (1.0, 99.0),  # Conservation détails
+                'gamma': 1.1,  # Légère compression dynamique
+                'clahe_clip': 2.5,  # CLAHE fort
+                'clahe_weight': 0.35  # Poids élevé CLAHE
+            },
+            'D': {  # Extremely dense (tissu extrêmement dense)
+                'percentiles': (0.5, 99.5),  # Conservation maximale
+                'gamma': 1.2,  # Compression dynamique
+                'clahe_clip': 3.0,  # CLAHE très fort
+                'clahe_weight': 0.40  # Poids maximal CLAHE
             }
         }
 
-    def apply_fallback(self, image: Union[np.ndarray, torch.Tensor], density: str) -> np.ndarray:
+        print(f"[Windowing] Initialized - Adaptive percentile method")
+        print(f"[Windowing] Output range: {preserve_range}")
+
+    def process_one(
+            self,
+            image: np.ndarray,
+            density: Optional[str] = None
+    ) -> np.ndarray:
         """
-        Apply fallback method (CLAHE or percentile) based on density.
+        Applique le windowing adaptatif sur une image.
+
+        Args:
+            image: Image 2D numpy array (H, W), n'importe quel dtype
+            density: Densité mammaire ('A', 'B', 'C', 'D')
+                     Si None, utilise 'B' (densité moyenne)
+
+        Returns:
+            Image windowée normalisée dans preserve_range
+
+        Raises:
+            ValueError: Si l'image n'est pas 2D ou contient des valeurs invalides
         """
-        if isinstance(image, torch.Tensor):
-            image = image.squeeze().cpu().numpy()
-        fallback_fn = self.fallback_methods.get(density, self.fallback_methods['B'])
-        return fallback_fn(image)
+        # Validation de l'entrée
+        if image.ndim != 2:
+            raise ValueError(f"Expected 2D image, got shape {image.shape}")
 
-    def _get_density_baseline(self, density: str) -> Dict[str, float]:
-        return self.density_baselines.get(density, self.density_baselines['B'])
+        if not np.isfinite(image).all():
+            raise ValueError("Image contains non-finite values (NaN or Inf)")
 
-    @staticmethod
-    def _apply_windowing(x: torch.Tensor, center_norm: torch.Tensor, width_norm: torch.Tensor, gamma: torch.Tensor) -> torch.Tensor:
-        x_min, x_max = x.min(), x.max()
-        x_range = x_max - x_min
-        center = x_min + center_norm * x_range
-        width = width_norm * x_range
+        img_min, img_max = image.min(), image.max()
+        if img_max - img_min < 1e-8:
+            print("[Windowing] WARNING: Image has no contrast")
+            return np.zeros_like(image, dtype=np.float32)
 
-        window_min = center - width / 2
-        window_max = center + width / 2
+        # Convertir en float32 si nécessaire
+        if image.dtype != np.float32:
+            image = image.astype(np.float32)
 
-        windowed = torch.clamp(x, window_min, window_max)
-        windowed = (windowed - window_min) / (width + 1e-8)
-        windowed = torch.pow(windowed + 1e-8, gamma)
+        # Sélectionner les paramètres selon la densité
+        if density is None or density.upper() not in self.density_params:
+            density = 'B'  # Densité par défaut (la plus courante)
+        else:
+            density = density.upper()
 
-        return windowed
+        params = self.density_params[density]
 
-    @staticmethod
-    def _clahe(image: np.ndarray, clip_limit: float = 2.0) -> np.ndarray:
-        img_uint8 = (image * 255).astype(np.uint8)
-        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
-        enhanced = clahe.apply(img_uint8)
-        return enhanced.astype(np.float32) / 255.0
+        # Appliquer le windowing adaptatif
+        windowed = self._adaptive_percentile_windowing(image, params)
 
-    @staticmethod
-    def _percentile(image: np.ndarray, low: float = 5, high: float = 95) -> np.ndarray:
-        p_low, p_high = np.percentile(image, [low, high])
-        windowed = np.clip(image, p_low, p_high)
-        return (windowed - p_low) / (p_high - p_low + 1e-8)
+        # Normalisation finale dans preserve_range
+        return self._normalize_to_range(windowed)
+
+    def _adaptive_percentile_windowing(
+            self,
+            image: np.ndarray,
+            params: dict
+    ) -> np.ndarray:
+        """
+        Pipeline de windowing adaptatif complet.
+
+        Étapes:
+            1. Clipping par percentiles (élimine outliers)
+            2. Normalisation [0, 1]
+            3. Gamma correction (ajuste contraste global)
+            4. CLAHE (améliore contraste local)
+            5. Fusion pondérée
+
+        Args:
+            image: Image en float32
+            params: Paramètres de densité
+
+        Returns:
+            Image windowée [0, 1]
+        """
+        # ============================================================
+        # ÉTAPE 1: Windowing par percentiles
+        # ============================================================
+        p_low, p_high = params['percentiles']
+        low_val, high_val = np.percentile(image, [p_low, p_high])
+
+        # Clipping vectorisé ultra-rapide
+        img_clipped = np.clip(image, low_val, high_val)
+
+        # Normalisation dans [0, 1]
+        img_norm = (img_clipped - low_val) / (high_val - low_val + 1e-8)
+
+        # ============================================================
+        # ÉTAPE 2: Gamma correction
+        # ============================================================
+        # Ajuste la distribution des intensités
+        # gamma < 1 : éclaircit les zones sombres
+        # gamma > 1 : assombrit les zones claires
+        gamma = params['gamma']
+        img_gamma = np.power(img_norm, gamma)
+
+        # ============================================================
+        # ÉTAPE 3: CLAHE (Contrast Limited Adaptive Histogram Equalization)
+        # ============================================================
+        # Améliore le contraste local sans amplifier le bruit
+
+        # Convertir en uint8 pour OpenCV CLAHE
+        img_uint8 = (img_gamma * 255).astype(np.uint8)
+
+        # Créer et appliquer CLAHE
+        clahe = cv2.createCLAHE(
+            clipLimit=params['clahe_clip'],  # Limite d'amplification du contraste
+            tileGridSize=(16, 16)  # Taille des tuiles (16x16 = bon compromis)
+        )
+        img_clahe = clahe.apply(img_uint8).astype(np.float32) / 255.0
+
+        # ============================================================
+        # ÉTAPE 4: Fusion pondérée
+        # ============================================================
+        # Combine gamma (contraste global) et CLAHE (contraste local)
+        clahe_weight = params['clahe_weight']
+        img_final = (1 - clahe_weight) * img_gamma + clahe_weight * img_clahe
+
+        return img_final
+
+    def _normalize_to_range(self, image: np.ndarray) -> np.ndarray:
+        """
+        Normalise l'image dans preserve_range.
+
+        Args:
+            image: Image en float32, supposée dans [0, 1]
+
+        Returns:
+            Image normalisée dans preserve_range
+        """
+        min_out, max_out = self.preserve_range
+
+        # Sécurité: re-normaliser si hors [0, 1]
+        img_min, img_max = image.min(), image.max()
+        if img_max - img_min > 1e-8:
+            image = (image - img_min) / (img_max - img_min)
+
+        # Mapper vers preserve_range
+        return image * (max_out - min_out) + min_out
+
+    def process_batch(
+            self,
+            images: list[np.ndarray],
+            densities: Optional[list[str]] = None
+    ) -> list[np.ndarray]:
+        """
+        Traite un batch d'images de manière séquentielle.
+
+        Pour du traitement parallèle, utilisez multiprocessing externalement.
+
+        Args:
+            images: Liste d'images 2D numpy
+            densities: Liste de densités correspondantes (optionnel)
+
+        Returns:
+            Liste d'images windowées
+        """
+        if densities is None:
+            densities = [None] * len(images)
+
+        if len(images) != len(densities):
+            raise ValueError(f"Mismatch: {len(images)} images but {len(densities)} densities")
+
+        return [
+            self.process_one(img, density)
+            for img, density in zip(images, densities)
+        ]
+

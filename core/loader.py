@@ -4,13 +4,14 @@ import pandas as pd
 import os
 import numpy as np
 import pydicom
+import shutil
 
 class Loader:
     """
     Handles data loading operations using a Config instance.
     Supports:
     - Loading a single CSV
-    - Loading DICOM images from file paths
+    - Loading DICOM images from file paths, including compressed formats
     """
 
     def __init__(self, config: Config):
@@ -37,28 +38,43 @@ class Loader:
         return self.df
 
     # ---------- DICOM Loading ---------- #
-    def load_dicom(self, dicom_path: str, verbose: bool = False) -> np.ndarray:
+    def load_dicom(self, dicom_path: str, verbose: bool = False, output_dtype=np.uint16) -> np.ndarray:
+        """
+        Load a single DICOM image.
+
+        Args:
+            dicom_path: Path to the DICOM file.
+            verbose: If True, prints debug info.
+            output_dtype: numpy dtype for returned array (uint16 for OpenCV, float32 for ML)
+
+        Returns:
+            Numpy array of image.
+        """
         if not os.path.exists(dicom_path):
             raise FileNotFoundError(f"DICOM not found: {dicom_path}")
 
+        # --- Read DICOM ---
         ds = pydicom.dcmread(dicom_path, force=True)
 
-        # Handle compression
+        # --- Handle compression ---
         ts = getattr(ds.file_meta, "TransferSyntaxUID", None)
         if ts and ts.is_compressed:
             try:
                 ds.decompress()
-                if verbose: print(f"[pydicom] decompressed: {ts.name}")
-            except Exception:
-                if shutil.which("gdcmconv") is None:
-                    raise CompressedDICOMError(f"Compressed DICOM {ts} cannot be handled (gdcmconv missing)")
+                if verbose:
+                    print(f"[pydicom] decompressed: {ts.name}")
+            except Exception as e:
+                # fallback: gdcmconv
                 tmp_path = f"{dicom_path}.tmp.dcm"
+                if shutil.which("gdcmconv") is None:
+                    raise RuntimeError(f"Compressed DICOM {ts} cannot be handled (gdcmconv missing). Original error: {e}")
                 os.system(f"gdcmconv -w {dicom_path} {tmp_path}")
                 ds = pydicom.dcmread(tmp_path, force=True)
                 os.remove(tmp_path)
-                if verbose: print(f"[gdcmconv] fallback decompression done: {ts.name}")
+                if verbose:
+                    print(f"[gdcmconv] fallback decompression done: {ts.name}")
 
-        # Load pixel array
+        # --- Extract pixel array ---
         img = ds.pixel_array.astype(np.float32)
 
         # Apply VOI LUT if available
@@ -77,17 +93,28 @@ class Loader:
         if str(getattr(ds, "PhotometricInterpretation", "")).upper() == "MONOCHROME1":
             img = img.max() - img
 
+        # Convert to proper dtype for OpenCV / processing
+        if np.issubdtype(output_dtype, np.integer):
+            img = np.clip(img, 0, np.iinfo(output_dtype).max).astype(output_dtype)
+        else:
+            img = img.astype(output_dtype)
+
         return img
 
-    def load_multiple_dicoms(self, dicom_paths: list[str]) -> list[np.ndarray]:
+    def load_multiple_dicoms(self, dicom_paths: list[str], verbose: bool = False, output_dtype=np.uint16) -> list[np.ndarray]:
         """
         Load multiple DICOM files at once.
-        Returns a list of normalized numpy arrays.
+        Returns a list of numpy arrays.
+
+        Args:
+            dicom_paths: list of DICOM file paths
+            verbose: print debug info
+            output_dtype: output array type
         """
         images = []
         for path in dicom_paths:
             try:
-                img = self.load_dicom(path)
+                img = self.load_dicom(path, verbose=verbose, output_dtype=output_dtype)
                 images.append(img)
             except Exception as e:
                 print(f"Failed to load DICOM {path}: {e}")

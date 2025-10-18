@@ -2,14 +2,14 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 import cv2
-from preprocess.cropping import ROICropping
+from preprocess.cropping import Cropping
 
 
 class TestROICropping(unittest.TestCase):
 
     def setUp(self):
         """Setup for tests"""
-        self.cropper = ROICropping(target_size=(512, 512))
+        self.cropper = Cropping(target_size=(512, 512))
 
         # Create test image (breast on right side)
         self.test_image = np.ones((300, 400), dtype=np.uint8) * 50
@@ -17,7 +17,7 @@ class TestROICropping(unittest.TestCase):
 
     def test_initialization(self):
         """Test class initialization"""
-        cropper = ROICropping(target_size=(256, 256), margin_mm=10.0)
+        cropper = Cropping(target_size=(256, 256), margin_mm=10.0)
         self.assertEqual(cropper.target_size, (256, 256))
         self.assertEqual(cropper.margin_mm, 10.0)
 

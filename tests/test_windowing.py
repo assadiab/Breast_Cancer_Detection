@@ -1,10 +1,10 @@
 import torch
 import numpy as np
-from preprocess.windowing import WindowingNet
+from preprocess.windowing import Windowing
 
 
 def test_forward_with_density():
-    model = WindowingNet()
+    model = Windowing()
     dummy_image = torch.rand(1, 1, 512, 512)  # batch=1, grayscale
     result = model(dummy_image, density='B')
 
@@ -15,7 +15,7 @@ def test_forward_with_density():
 
 
 def test_forward_without_density():
-    model = WindowingNet()
+    model = Windowing()
     dummy_image = torch.rand(1, 1, 512, 512)
     result = model(dummy_image, density=None)
 
@@ -26,7 +26,7 @@ def test_forward_without_density():
 
 
 def test_fallback_methods():
-    model = WindowingNet()
+    model = Windowing()
     dummy_image = np.random.rand(512, 512).astype(np.float32)
 
     for density in ['A', 'B', 'C', 'D']:

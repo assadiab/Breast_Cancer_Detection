@@ -3,7 +3,7 @@ import cv2
 from typing import Tuple, Optional
 
 
-class ROICropping:
+class Cropping:
     """
     Handles breast ROI extraction, orientation correction,
     pectoral muscle removal, and cropping operations.
@@ -165,26 +165,6 @@ class ROICropping:
     # -----------------------------------------------------------
     # --- MAIN PIPELINE ---
     # -----------------------------------------------------------
-
-    def process_one(self, image: np.ndarray) -> np.ndarray:
-        """
-        Full ROI cropping pipeline for one image (generic version).
-
-        Args:
-            image: Grayscale image as NumPy array.
-
-        Returns:
-            Cropped image ready for model input.
-        """
-        if image.ndim != 2:
-            raise ValueError("Input image must be 2D grayscale.")
-
-        image = self.orient_left(image)
-        mask = self.breast_mask(image)
-        mask = self.remove_pectoral_MLO(image, mask)
-        mask = self.erode_mask_mm(mask)
-        cropped = self.crop_to_roi(image, mask)
-        return cropped
 
     def process_with_metadata(self, image: np.ndarray, view: str = None, laterality: str = None) -> np.ndarray:
         """

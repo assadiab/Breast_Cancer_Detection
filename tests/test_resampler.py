@@ -24,7 +24,7 @@ def sample_images():
             'image': img_np,
             'spacing': (0.27, 0.27),
             'patient_id': i,
-            'image_id': i  # <- important, doit exister pour process_all_chunks
+            'image_id': i  # <- important pour process_all_chunks
         })
     return images
 
@@ -37,10 +37,16 @@ def test_process_all_chunks(tmp_out_dir, sample_images):
 
     # Vérifications
     assert isinstance(df_res, pd.DataFrame)
-    assert set(df_res.columns) >= {'image_id', 'stem', 'patient_id', 'spacing'}
+    # Colonnes présentes dans la sortie réelle
+    expected_cols = {'image_id', 'stem', 'patient_id', 'orig_spacing_mm', 'new_spacing_mm', 'npy', 'json', 'shape', 'policy_reason'}
+    assert set(df_res.columns) >= expected_cols
     assert len(df_res) == len(sample_images)
+
     for idx, row in df_res.iterrows():
-        # Vérifie que chaque image a été traitée ou qu'il y a un message d'erreur
+        # Vérifie que chaque image a été traitée
         assert 'image_id' in row
         assert row['image_id'] == row['image_id']  # correspondance id
-        assert row['spacing'] is not None
+        assert row['orig_spacing_mm'] is not None
+        assert row['new_spacing_mm'] is not None
+        assert row['npy'] is not None
+        assert row['json'] is not None

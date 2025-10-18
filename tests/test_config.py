@@ -6,6 +6,7 @@ from core.configuration import Config
 # Temporary dummy paths for testing
 DUMMY_CSV = '/tmp/dummy.csv'
 DUMMY_IMAGES = '/tmp/images'
+DUMMY_OUT = "data/out"
 
 # Ensure dummy paths exist for the test
 os.makedirs(DUMMY_IMAGES, exist_ok=True)
@@ -28,16 +29,21 @@ def test_default_configuration_structure(config: Config):
     assert expected_keys.issubset(config.config.keys()), "Missing one or more top-level keys in config."
 
 
-def test_default_paths_exist_in_config(config: Config):
-    """Test that all expected dataset paths are properly defined."""
-    paths: Dict[str, str] = config.config['paths']
-    expected_path_keys = {'csv', 'images'}
+def test_default_paths_exist_in_config():
+    """Test that all expected dataset paths are properly defined in Config."""
+    # Create Config with dummy paths
+    config = Config(csv_path=DUMMY_CSV, images_dir=DUMMY_IMAGES, out_dir=DUMMY_OUT)
 
-    assert expected_path_keys == set(paths.keys()), "Paths keys do not match expected keys."
+    paths: Dict[str, str] = config.config['paths']
+    expected_path_keys = {'csv', 'images', 'out'}
+
+    # Check that all expected keys exist
+    assert expected_path_keys == set(paths.keys()), f"Paths keys do not match expected keys: {set(paths.keys())}"
 
     # Validate that paths are correctly set
-    assert paths['csv'] == DUMMY_CSV
-    assert paths['images'] == DUMMY_IMAGES
+    assert paths['csv'] == DUMMY_CSV, f"CSV path mismatch: {paths['csv']}"
+    assert paths['images'] == DUMMY_IMAGES, f"Images path mismatch: {paths['images']}"
+    assert paths['out'] == DUMMY_OUT, f"Out path mismatch: {paths['out']}"
 
 
 def test_preprocessing_defaults(config: Config):
