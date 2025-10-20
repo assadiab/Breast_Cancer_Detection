@@ -113,7 +113,7 @@ class IsotropicResampler:
     # ----------------------------------------------------------
     def process_one(self, stem: str, img_np: np.ndarray, spacing: tuple[float, float]):
         """
-        Process a single image array: resample + save artifacts.
+        Return resampled image and metadata, without saving files.
         """
         h, w = img_np.shape
         t_safe, reason = self.pick_reasonable_target(h, w, *spacing)
@@ -126,8 +126,8 @@ class IsotropicResampler:
             "policy_reason": reason
         }
 
-        npz_path, json_path = self.save_iso_artifacts(stem, img_iso, meta)
-        return {"stem": stem, "npy": npz_path, "json": json_path, **meta}
+        # Return image directly, no .npz/.json
+        return {"img": img_iso, **meta}
 
     # ----------------------------------------------------------
     def process_all_chunks(self, df: pd.DataFrame, id_col: str = "image_id"):
