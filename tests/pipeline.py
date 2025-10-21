@@ -70,23 +70,17 @@ def run_pipeline_gpu_batch(batch_size=16):
 
     # Load CSVs
     CSV_PATHS = {
-        'train': Path("../data/csv/X_train.csv"),
-        'val': Path("../data/csv/X_val.csv"),
-        'test': Path("../data/csv/X_test.csv")
+        'train': Path("../data/csv/X_train.csv")
     }
     IMAGE_PATHS = {
-        'train': Path("../data/train/"),
-        'val': Path("../data/val/"),
-        'test': Path("../data/test/")
+        'train': Path("../data/train/")
     }
     LABEL_PATHS = {
-        'train': Path("../data/csv/y_train.csv"),
-        'val': Path("../data/csv/y_val.csv"),
-        'test': Path("../data/csv/y_test.csv")
+        'train': Path("../data/csv/y_train.csv")
     }
 
     splits = {}
-    for split in ['train','val','test']:
+    for split in ['train']:
         X_df = pd.read_csv(CSV_PATHS[split])
         y_df = pd.read_csv(LABEL_PATHS[split])
         merged = pd.merge(X_df, y_df, on=['patient_id','image_id']) if 'image_id' in y_df.columns else X_df.copy()
