@@ -1,46 +1,253 @@
-# train_metrics.py
+# train_final_mps.py
 import os
+
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 import numpy as np
 from pathlib import Path
 import sys
 from datetime import datetime
 import warnings
 import time
+import pandas as pd
+from tqdm import tqdm
+from dataclasses import dataclass
+from typing import Optional, Tuple
 from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, precision_score, recall_score, \
-    balanced_accuracy_score, confusion_matrix
+    balanced_accuracy_score
 
 warnings.filterwarnings('ignore')
 
-# Optimisations
-torch.backends.cudnn.benchmark = True
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
 
-# Ajouter les chemins
-sys.path.append(str(Path(__file__).parent))
+# ==========================================================
+# CONFIGURATION MPS
+# ==========================================================
+@dataclass
+class OptimizedConfig:
+    # Training
+    epochs: int = 20
+    batch_size: int = 4  # Plus petit pour MPS
+    grad_accum_steps: int = 4  # Accumulation pour simuler batch plus grand
+    lr: float = 1.5e-4
+    weight_decay: float = 1e-4
 
-# Import depuis le fichier original train.py
-from train import OptimizedDicomDataset, OptimizedConfig, EMA, FocalLoss
-from models.multi_expert import OptimizedMultiExpertModel
-from imbalanced_strategies import ImbalanceStrategyManager, ThresholdOptimizer
+    # Image sizes
+    high_res: Tuple[int, int] = (512, 512)
+    low_res: Tuple[int, int] = (224, 224)
+
+    # Device - MPS pour Apple Silicon
+    device: str = "mps"
+    num_workers: int = 4  # Moins de workers pour MPS
+    pin_memory: bool = False  # Pas de pin_memory pour MPS
+
+    # Model
+    embed_dim: int = 256
+    use_checkpoint: bool = True
+
+    # Training strategy
+    freeze_epochs: int = 4
+    warmup_epochs: int = 2
+
+    # Loss
+    focal_alpha: float = 0.75
+    focal_gamma: float = 2.5
+
+    # Paths
+    save_dir: str = "checkpoints_final_mps"
 
 
+# ==========================================================
+# DATASET MPS OPTIMISÉ
+# ==========================================================
+class SimpleMedicalAugmentation:
+    """Transformations simples optimisées pour MPS"""
+
+    def __init__(self, img_size: Tuple[int, int], is_train: bool = True):
+        self.img_size = img_size
+        self.is_train = is_train
+
+    def __call__(self, image: np.ndarray) -> torch.Tensor:
+        from PIL import Image
+
+        # Redimensionnement
+        img_pil = Image.fromarray((image * 255).astype(np.uint8))
+        img_resized = img_pil.resize(self.img_size, Image.BILINEAR)
+        img_array = np.array(img_resized) / 255.0
+
+        # Conversion tensor
+        img_tensor = torch.from_numpy(img_array).float()
+        img_tensor = img_tensor.unsqueeze(0)  # Add channel dimension
+
+        # Normalisation
+        img_tensor = (img_tensor - 0.5) / 0.5
+
+        return img_tensor
+
+
+class OptimizedDicomDataset(Dataset):
+    def __init__(
+            self,
+            x_csv: str,
+            dicom_root: str,
+            y_csv: Optional[str] = None,
+            config: OptimizedConfig = None,
+            is_train: bool = True
+    ):
+        self.df = pd.read_csv(x_csv)
+        self.dicom_root = Path(dicom_root)
+        self.is_train = is_train
+        self.config = config or OptimizedConfig()
+
+        if is_train:
+            if y_csv is None:
+                raise ValueError("Training requires y_csv")
+            self.labels = pd.read_csv(y_csv)
+        else:
+            self.labels = None
+
+        # Transformations
+        self.transform = SimpleMedicalAugmentation(
+            img_size=self.config.high_res,
+            is_train=is_train
+        )
+        self.transform_low = SimpleMedicalAugmentation(
+            img_size=self.config.low_res,
+            is_train=False
+        )
+
+        self._cache = {}
+
+    def _load_dicom(self, idx: int) -> np.ndarray:
+        if idx in self._cache:
+            return self._cache[idx]
+
+        row = self.df.iloc[idx]
+        path = self.dicom_root / f"{row['patient_id']}_{row['image_id']}.dcm"
+
+        try:
+            import pydicom
+            ds = pydicom.dcmread(path)
+            img = ds.pixel_array.astype(np.float32)
+
+            # Normalisation robuste
+            p1, p99 = np.percentile(img, (1, 99))
+            img = np.clip(img, p1, p99)
+            img = (img - p1) / (p99 - p1 + 1e-8)
+
+            self._cache[idx] = img
+            return img
+        except Exception as e:
+            print(f"Error loading {path}: {e}")
+            return np.zeros((512, 512), dtype=np.float32)
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int):
+        img = self._load_dicom(idx)
+
+        # Transformations
+        img_high = self.transform(img)
+        img_low = self.transform_low(img)
+
+        if self.is_train:
+            label = torch.tensor(
+                self.labels.iloc[idx]['cancer'],
+                dtype=torch.float32
+            )
+            return img_high, img_low, label, torch.tensor(idx)
+
+        return img_high, img_low
+
+
+# ==========================================================
+# EMA POUR MPS
+# ==========================================================
+class EMA:
+    def __init__(self, model: nn.Module, decay: float = 0.999):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+
+    def update(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = self.decay * self.shadow[name] + \
+                                    (1 - self.decay) * param.data
+
+    def apply_shadow(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.backup[name] = param.data
+                param.data = self.shadow[name]
+
+    def restore(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                param.data = self.backup[name]
+        self.backup = {}
+
+
+# ==========================================================
+# STRATÉGIES DÉSÉQUILIBRE MPS
+# ==========================================================
+class SimpleImbalanceManager:
+    def __init__(self, cancer_rate=0.0732):
+        self.pos_weight = 1.0 / cancer_rate
+
+    def create_balanced_loader(self, dataset, batch_size, num_workers=4):
+        """Crée un DataLoader équilibré pour MPS"""
+        # Calcul des poids
+        labels = np.array([dataset.labels.iloc[i]['cancer'] for i in range(len(dataset))])
+        class_counts = np.bincount(labels.astype(int))
+        class_weights = 1.0 / class_counts
+        sample_weights = [class_weights[label] for label in labels]
+
+        sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
+
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            num_workers=num_workers,
+            pin_memory=False,  # Pas de pin_memory pour MPS
+            persistent_workers=True if num_workers > 0 else False
+        )
+
+
+class AdaptiveFocalLoss(nn.Module):
+    def __init__(self, alpha=0.75, gamma=2.5):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, preds, targets):
+        bce = F.binary_cross_entropy(preds, targets, reduction='none')
+        pt = torch.exp(-bce)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce
+        return focal_loss.mean()
+
+
+# ==========================================================
+# MÉTRIQUES
+# ==========================================================
 class MetricsLogger:
-    """Logger complet pour toutes les métriques"""
-
     def __init__(self):
         self.epoch_metrics = []
         self.best_metrics = {}
 
     def log_epoch(self, epoch, train_metrics, val_metrics, learning_rate, epoch_time):
-        """Log toutes les métriques d'une epoch"""
         metrics = {
             'epoch': epoch,
             'train_loss': train_metrics['loss'],
@@ -52,7 +259,6 @@ class MetricsLogger:
             'val_precision': val_metrics['precision'],
             'val_recall': val_metrics['recall'],
             'val_balanced_accuracy': val_metrics['balanced_accuracy'],
-            'val_best_threshold': val_metrics['best_threshold'],
             'learning_rate': learning_rate,
             'epoch_time': epoch_time
         }
@@ -64,7 +270,6 @@ class MetricsLogger:
         return metrics
 
     def _update_best_metrics(self, metrics):
-        """Met à jour les meilleures métriques"""
         if not self.best_metrics:
             self.best_metrics = metrics.copy()
             return
@@ -72,100 +277,65 @@ class MetricsLogger:
         if metrics['val_auc'] > self.best_metrics['val_auc']:
             self.best_metrics.update({k: metrics[k] for k in ['val_auc', 'epoch']})
 
-        if metrics['val_f1'] > self.best_metrics['val_f1']:
-            self.best_metrics.update({k: metrics[k] for k in ['val_f1', 'epoch']})
-
-        if metrics['val_ap'] > self.best_metrics['val_ap']:
-            self.best_metrics.update({k: metrics[k] for k in ['val_ap', 'epoch']})
-
     def _print_epoch_metrics(self, metrics):
-        """Affiche les métriques de l'epoch de manière claire"""
         print(f"\n{'=' * 80}")
-        print(f"📊 EPOCH {metrics['epoch']:02d} - RÉSULTATS DÉTAILLÉS")
+        print(f"📊 EPOCH {metrics['epoch']:02d} - RÉSULTATS MPS")
         print(f"{'=' * 80}")
+        print(f"⏰ Temps: {metrics['epoch_time']:.1f}s | LR: {metrics['learning_rate']:.2e}")
 
-        # Timing et LR
-        print(f"⏰ Temps epoch: {metrics['epoch_time']:.1f}s | LR: {metrics['learning_rate']:.2e}")
-
-        # Métriques TRAIN
         print(f"\n🏋️  TRAIN:")
-        print(f"   📉 Loss:      {metrics['train_loss']:>8.4f}")
-        print(f"   📈 AUC:       {metrics['train_auc']:>8.4f}")
-        print(f"   🎯 AP:        {metrics['train_ap']:>8.4f}")
+        print(f"   📉 Loss: {metrics['train_loss']:.4f}")
+        print(f"   📈 AUC: {metrics['train_auc']:.4f}")
+        print(f"   🎯 AP: {metrics['train_ap']:.4f}")
 
-        # Métriques VALIDATION
         print(f"\n🧪 VALIDATION:")
-        print(
-            f"   📊 AUC:       {metrics['val_auc']:>8.4f} {'🎯 BEST' if metrics['val_auc'] == self.best_metrics.get('val_auc', 0) else ''}")
-        print(
-            f"   🎯 AP:        {metrics['val_ap']:>8.4f} {'🎯 BEST' if metrics['val_ap'] == self.best_metrics.get('val_ap', 0) else ''}")
-        print(
-            f"   ⚖️  F1:        {metrics['val_f1']:>8.4f} {'🎯 BEST' if metrics['val_f1'] == self.best_metrics.get('val_f1', 0) else ''}")
-        print(f"   🎯 Precision: {metrics['val_precision']:>8.4f}")
-        print(f"   🔄 Recall:    {metrics['val_recall']:>8.4f}")
-        print(f"   ⚖️  Bal Acc:   {metrics['val_balanced_accuracy']:>8.4f}")
-        print(f"   📏 Threshold: {metrics['val_best_threshold']:>8.3f}")
-
-        # Meilleures métriques globales
-        self._print_best_metrics()
-
-        print(f"{'=' * 80}")
-
-    def _print_best_metrics(self):
-        """Affiche les meilleures métriques globales"""
-        if self.best_metrics:
-            print(f"\n🏆 MEILLEURES MÉTRIQUES GLOBALES (Epoch {self.best_metrics['epoch']}):")
-            print(f"   📊 Best AUC:  {self.best_metrics['val_auc']:.4f}")
-            print(f"   🎯 Best AP:   {self.best_metrics['val_ap']:.4f}")
-            print(f"   ⚖️  Best F1:   {self.best_metrics['val_f1']:.4f}")
+        best_flag = "🎯 BEST" if metrics['val_auc'] == self.best_metrics.get('val_auc', 0) else ""
+        print(f"   📊 AUC: {metrics['val_auc']:.4f} {best_flag}")
+        print(f"   🎯 AP: {metrics['val_ap']:.4f}")
+        print(f"   ⚖️  F1: {metrics['val_f1']:.4f}")
+        print(f"   🎯 Precision: {metrics['val_precision']:.4f}")
+        print(f"   🔄 Recall: {metrics['val_recall']:.4f}")
+        print(f"   ⚖️  Balanced Acc: {metrics['val_balanced_accuracy']:.4f}")
 
 
-class ComprehensiveTrainer:
+# ==========================================================
+# TRAINER MPS
+# ==========================================================
+class MpsTrainer:
     def __init__(self, config: OptimizedConfig):
         self.cfg = config
         self.device = self._setup_device()
 
         # Modèle
+        from models.multi_expert import OptimizedMultiExpertModel
         self.model = OptimizedMultiExpertModel(
             embed_dim=config.embed_dim,
             use_checkpoint=config.use_checkpoint
         ).to(self.device)
 
         # Gestionnaires
-        self.strategy_manager = ImbalanceStrategyManager(
-            cancer_rate=0.0732,
-            use_mixup=True,
-            use_hard_mining=True,
-            device=str(self.device)
-        )
-
-        # EMA
+        self.imbalance_manager = SimpleImbalanceManager(cancer_rate=0.0732)
+        self.loss_fn = AdaptiveFocalLoss(alpha=0.75, gamma=2.5)
         self.ema = EMA(self.model, decay=0.999)
-
-        # Logger de métriques
         self.metrics_logger = MetricsLogger()
 
-        # Créer répertoire checkpoints
         Path(config.save_dir).mkdir(exist_ok=True)
+        print("✅ Trainer MPS initialisé")
 
-        print("✅ Trainer initialisé avec métriques complètes")
-
-    def _setup_device(self) -> torch.device:
-        """Configure le device"""
-        if torch.cuda.is_available():
-            device = torch.device('cuda')
-            print(f"🚀 GPU: {torch.cuda.get_device_name()}")
-            print(f"   Memory: {torch.cuda.get_device_properties(device).total_memory / 1024 ** 3:.1f}GB")
+    def _setup_device(self):
+        if torch.backends.mps.is_available():
+            device = torch.device('mps')
+            # Optimisation mémoire MPS
+            torch.mps.set_per_process_memory_fraction(0.7)
+            print("🚀 MPS (Apple Silicon) disponible et configuré")
             return device
         else:
-            print("⚠️  CUDA non disponible, utilisation CPU")
+            print("⚠️  MPS non disponible, utilisation CPU")
             return torch.device("cpu")
 
-    def setup_data(self, train_csv: str, val_csv: str, train_y_csv: str, val_y_csv: str, dicom_root: str):
-        """Configure les données"""
-        print("📊 Configuration des données...")
+    def setup_data(self, train_csv, val_csv, train_y_csv, val_y_csv, dicom_root):
+        print("📊 Configuration des données MPS...")
 
-        # Datasets
         self.train_dataset = OptimizedDicomDataset(
             train_csv, dicom_root, train_y_csv, self.cfg, is_train=True
         )
@@ -173,89 +343,67 @@ class ComprehensiveTrainer:
             val_csv, dicom_root, val_y_csv, self.cfg, is_train=True
         )
 
-        # DataLoaders avec sampling équilibré
-        self.train_loader = self.strategy_manager.create_balanced_loader(
-            self.train_dataset,
-            batch_size=self.cfg.batch_size,
-            num_workers=self.cfg.num_workers
+        # DataLoaders optimisés MPS
+        self.train_loader = self.imbalance_manager.create_balanced_loader(
+            self.train_dataset, self.cfg.batch_size, self.cfg.num_workers
         )
 
-        # Validation sans sampling
         self.val_loader = DataLoader(
             self.val_dataset,
             batch_size=self.cfg.batch_size * 2,
             shuffle=False,
             num_workers=self.cfg.num_workers,
-            pin_memory=True
+            pin_memory=False  # Important pour MPS
         )
 
         print(f"✅ Données chargées: {len(self.train_dataset)} train, {len(self.val_dataset)} val")
 
-    def compute_detailed_metrics(self, preds: np.ndarray, targets: np.ndarray) -> dict:
-        """Calcule toutes les métriques détaillées"""
+    def compute_metrics(self, preds, targets):
         if len(np.unique(targets)) < 2:
-            return {
-                'auc': 0.5, 'average_precision': 0.5, 'f1': 0.0,
-                'precision': 0.0, 'recall': 0.0, 'balanced_accuracy': 0.5,
-                'best_threshold': 0.5, 'confusion_matrix': None
-            }
+            return {'auc': 0.5, 'average_precision': 0.5, 'f1': 0.0,
+                    'precision': 0.0, 'recall': 0.0, 'balanced_accuracy': 0.5}
 
-        # Optimisation du threshold
-        threshold_optimizer = ThresholdOptimizer(metric='f1')
-        best_threshold, threshold_results = threshold_optimizer.optimize(targets, preds)
-
-        # Prédictions binaires avec meilleur threshold
-        best_preds = (preds >= best_threshold).astype(int)
-
-        # Calcul de toutes les métriques
         auc = roc_auc_score(targets, preds)
         ap = average_precision_score(targets, preds)
-        f1 = f1_score(targets, best_preds, zero_division=0)
+
+        # Optimisation threshold
+        thresholds = np.linspace(0.1, 0.9, 50)
+        best_f1 = 0
+
+        for thresh in thresholds:
+            preds_binary = (preds >= thresh).astype(int)
+            f1 = f1_score(targets, preds_binary, zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+
+        best_preds = (preds >= 0.5).astype(int)  # Utiliser 0.5 pour les autres métriques
         precision = precision_score(targets, best_preds, zero_division=0)
         recall = recall_score(targets, best_preds, zero_division=0)
         balanced_acc = balanced_accuracy_score(targets, best_preds)
-        cm = confusion_matrix(targets, best_preds)
 
         return {
-            'auc': auc,
-            'average_precision': ap,
-            'f1': f1,
-            'precision': precision,
-            'recall': recall,
-            'balanced_accuracy': balanced_acc,
-            'best_threshold': best_threshold,
-            'confusion_matrix': cm
+            'auc': auc, 'average_precision': ap, 'f1': best_f1,
+            'precision': precision, 'recall': recall, 'balanced_accuracy': balanced_acc
         }
 
-    def train_epoch(self, optimizer: optim.Optimizer, epoch: int) -> dict:
-        """Époque d'entraînement avec métriques détaillées"""
+    def train_epoch(self, optimizer, epoch):
         self.model.train()
         total_loss = 0
-        all_preds = []
-        all_targets = []
+        all_preds, all_targets = [], []
 
-        from tqdm import tqdm
-        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
+        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train MPS]")
 
         for batch_idx, (img_high, img_low, labels, indices) in enumerate(pbar):
-            img_high = img_high.to(self.device, non_blocking=True)
-            img_low = img_low.to(self.device, non_blocking=True)
-            labels = labels.to(self.device, non_blocking=True)
-            indices = indices.to(self.device, non_blocking=True)
-
-            # Mixup
-            img_high, labels = self.strategy_manager.apply_mixup(img_high, labels)
+            img_high = img_high.to(self.device)
+            img_low = img_low.to(self.device)
+            labels = labels.to(self.device)
 
             # Forward
             preds, gates, embeddings = self.model(img_high, img_low)
-            loss_dict = self.strategy_manager.compute_loss(preds.squeeze(), labels)
-            loss = loss_dict['total'] / self.cfg.grad_accum_steps
+            loss = self.loss_fn(preds.squeeze(), labels) / self.cfg.grad_accum_steps
 
             # Backward
             loss.backward()
-
-            # Hard mining
-            self.strategy_manager.update_hard_mining(indices, preds.squeeze(), labels)
 
             # Gradient accumulation
             if (batch_idx + 1) % self.cfg.grad_accum_steps == 0:
@@ -264,83 +412,57 @@ class ComprehensiveTrainer:
                 optimizer.zero_grad()
                 self.ema.update()
 
-            # Métriques
             total_loss += loss.item() * self.cfg.grad_accum_steps
             all_preds.extend(preds.squeeze().detach().cpu().numpy())
             all_targets.extend(labels.cpu().numpy())
 
-            # Progress bar
-            if batch_idx % 10 == 0:
-                current_lr = optimizer.param_groups[0]['lr']
-                pbar.set_postfix({
-                    'loss': f"{loss.item() * self.cfg.grad_accum_steps:.4f}",
-                    'lr': f"{current_lr:.2e}",
-                    'mem': f"{torch.cuda.memory_allocated() / 1024 ** 3:.1f}GB"
-                })
+            # Monitoring mémoire MPS
+            if batch_idx % 20 == 0:
+                if self.device.type == 'mps':
+                    mem = torch.mps.current_allocated_memory() / 1024 ** 3
+                    pbar.set_postfix({
+                        'loss': f"{loss.item() * self.cfg.grad_accum_steps:.4f}",
+                        'mem_gb': f"{mem:.2f}"
+                    })
+                else:
+                    pbar.set_postfix({
+                        'loss': f"{loss.item() * self.cfg.grad_accum_steps:.4f}"
+                    })
 
-        # Calcul métriques train
-        train_metrics = self.compute_detailed_metrics(np.array(all_preds), np.array(all_targets))
+            # Nettoyage mémoire MPS
+            if batch_idx % 50 == 0 and self.device.type == 'mps':
+                torch.mps.empty_cache()
+
+        train_metrics = self.compute_metrics(np.array(all_preds), np.array(all_targets))
         train_metrics['loss'] = total_loss / len(self.train_loader)
 
         return train_metrics
 
     @torch.no_grad()
-    def validate(self) -> dict:
-        """Validation avec métriques complètes"""
+    def validate(self):
         self.ema.apply_shadow()
         self.model.eval()
 
-        all_preds = []
-        all_targets = []
-        all_gates = []
+        all_preds, all_targets = [], []
 
-        from tqdm import tqdm
-        pbar = tqdm(self.val_loader, desc="Validation")
-
-        for img_high, img_low, labels in pbar:
-            img_high = img_high.to(self.device, non_blocking=True)
-            img_low = img_low.to(self.device, non_blocking=True)
-            labels = labels.to(self.device, non_blocking=True)
+        for img_high, img_low, labels in tqdm(self.val_loader, desc="Validation MPS"):
+            img_high = img_high.to(self.device)
+            img_low = img_low.to(self.device)
+            labels = labels.to(self.device)
 
             preds, gates, _ = self.model(img_high, img_low)
-
             all_preds.extend(preds.squeeze().cpu().numpy())
             all_targets.extend(labels.cpu().numpy())
-            all_gates.extend(gates.cpu().numpy())
 
         self.ema.restore()
+        return self.compute_metrics(np.array(all_preds), np.array(all_targets))
 
-        # Métriques de validation
-        val_metrics = self.compute_detailed_metrics(np.array(all_preds), np.array(all_targets))
-
-        # Analyse des gates
-        all_gates = np.array(all_gates)
-        mean_gates = all_gates.mean(axis=0)
-        gate_std = all_gates.std(axis=0)
-        expert_names = ["Detector", "Texture", "Context", "Segment"]
-
-        val_metrics['gate_analysis'] = {
-            name: f"{mean:.3f} ± {std:.3f}"
-            for name, mean, std in zip(expert_names, mean_gates, gate_std)
-        }
-
-        # Affichage matrice de confusion
-        if val_metrics['confusion_matrix'] is not None:
-            print(f"\n🎯 MATRICE DE CONFUSION:")
-            print(f"   TN: {val_metrics['confusion_matrix'][0, 0]}, FP: {val_metrics['confusion_matrix'][0, 1]}")
-            print(f"   FN: {val_metrics['confusion_matrix'][1, 0]}, TP: {val_metrics['confusion_matrix'][1, 1]}")
-
-        return val_metrics
-
-    def fit(self, train_csv: str, val_csv: str, train_y_csv: str, val_y_csv: str, dicom_root: str):
-        """Pipeline d'entraînement complet avec métriques"""
-        print("🚀 DÉMARRAGE ENTRAÎNEMENT AVEC MÉTRIQUES DÉTAILLÉES")
+    def fit(self, train_csv, val_csv, train_y_csv, val_y_csv, dicom_root):
+        print("🚀 DÉMARRAGE ENTRAÎNEMENT MPS")
         print("=" * 80)
 
-        # Setup données
         self.setup_data(train_csv, val_csv, train_y_csv, val_y_csv, dicom_root)
 
-        # Optimizer
         optimizer = optim.AdamW(
             self.model.parameters(),
             lr=self.cfg.lr,
@@ -348,146 +470,78 @@ class ComprehensiveTrainer:
             betas=(0.9, 0.999)
         )
 
-        # Scheduler
-        from torch.optim.lr_scheduler import OneCycleLR
-        steps_per_epoch = len(self.train_loader) // self.cfg.grad_accum_steps
-        scheduler = OneCycleLR(
-            optimizer,
-            max_lr=self.cfg.lr,
-            epochs=self.cfg.epochs,
-            steps_per_epoch=steps_per_epoch,
-            pct_start=0.3,
-            anneal_strategy='cos'
-        )
+        from torch.optim.lr_scheduler import CosineAnnealingLR
+        scheduler = CosineAnnealingLR(optimizer, T_max=self.cfg.epochs)
 
-        # Entraînement
         for epoch in range(self.cfg.epochs):
             epoch_start = time.time()
 
-            # Dégeler backbones
+            # Unfreeze après certaines epochs
             if epoch == self.cfg.freeze_epochs:
-                print("\n🔓 Déblocage des backbones pré-entraînés...")
+                print("🔓 Déblocage des backbones...")
                 self.model.unfreeze_backbones()
-                for g in optimizer.param_groups:
-                    g['lr'] = self.cfg.lr * 0.1
 
             # Entraînement
             train_metrics = self.train_epoch(optimizer, epoch)
-
-            # Validation
             val_metrics = self.validate()
 
-            # Timing
+            # Métriques
             epoch_time = time.time() - epoch_start
-
-            # Learning rate actuel
             current_lr = optimizer.param_groups[0]['lr']
 
-            # Log des métriques
             self.metrics_logger.log_epoch(
                 epoch + 1, train_metrics, val_metrics, current_lr, epoch_time
             )
 
             # Sauvegarde best model
             if val_metrics['auc'] > self.metrics_logger.best_metrics.get('val_auc', 0):
-                self.save_checkpoint(
-                    f"{self.cfg.save_dir}/best_auc_{val_metrics['auc']:.4f}.pth",
-                    epoch, val_metrics
-                )
+                torch.save({
+                    'epoch': epoch,
+                    'model_state': self.model.state_dict(),
+                    'ema_shadow': self.ema.shadow,
+                    'metrics': val_metrics,
+                    'config': self.cfg
+                }, f"{self.cfg.save_dir}/best_auc_{val_metrics['auc']:.4f}.pth")
+                print(f"💾 Best model saved (AUC: {val_metrics['auc']:.4f})")
 
-            # Scheduler step
             scheduler.step()
 
-        # Sauvegarde finale
-        print("\n💾 Sauvegarde du modèle final...")
+        # Final save
         self.ema.apply_shadow()
-        self.save_checkpoint(f"{self.cfg.save_dir}/final_ema.pth", self.cfg.epochs, val_metrics)
-
-        # Résumé final
-        self.print_final_summary()
-
-    def save_checkpoint(self, path: str, epoch: int, metrics: dict):
-        """Sauvegarde checkpoint"""
         torch.save({
-            'epoch': epoch,
+            'epoch': self.cfg.epochs,
             'model_state': self.model.state_dict(),
             'ema_shadow': self.ema.shadow,
-            'metrics': metrics,
-            'config': self.cfg,
-            'timestamp': datetime.now().isoformat()
-        }, path)
-        print(f"💾 Checkpoint sauvegardé: {path}")
+            'config': self.cfg
+        }, f"{self.cfg.save_dir}/final_ema.pth")
 
-    def print_final_summary(self):
-        """Affiche le résumé final de l'entraînement"""
-        best = self.metrics_logger.best_metrics
-        print(f"\n{'=' * 80}")
-        print(f"🎉 ENTRAÎNEMENT TERMINÉ - RÉSUMÉ FINAL")
-        print(f"{'=' * 80}")
-        print(f"🏆 MEILLEURES PERFORMANCES (Epoch {best['epoch']}):")
-        print(f"   📊 AUC:  {best['val_auc']:.4f}")
-        print(f"   🎯 AP:   {best['val_ap']:.4f}")
-        print(f"   ⚖️  F1:   {best['val_f1']:.4f}")
-        print(f"   🎯 Precision: {best['val_precision']:.4f}")
-        print(f"   🔄 Recall:    {best['val_recall']:.4f}")
-        print(f"   ⚖️  Bal Acc:   {best['val_balanced_accuracy']:.4f}")
-        print(f"{'=' * 80}")
+        print(f"\n🎉 ENTRAÎNEMENT MPS TERMINÉ!")
+        print(f"🏆 Best AUC: {self.metrics_logger.best_metrics['val_auc']:.4f}")
 
 
 # ==========================================================
-# CONFIGURATION ET LANCEMENT
+# LANCEMENT MPS
 # ==========================================================
-def get_optimized_config():
-    return OptimizedConfig(
-        epochs=20,
-        batch_size=8,  # Plus grand sur GPU
-        grad_accum_steps=2,
-        lr=1.5e-4,
-        weight_decay=1e-4,
-        high_res=(512, 512),
-        low_res=(224, 224),
-        embed_dim=256,
-        use_checkpoint=True,
-        freeze_epochs=4,
-        num_workers=8,  # Plus de workers pour GPU
-        pin_memory=True,
-        save_dir="checkpoints_metrics"
-    )
-
-
 def main():
-    """Lancement de l'entraînement"""
-    print("🎯 ENTRAÎNEMENT AVEC MÉTRIQUES DÉTAILLÉES")
-    print("=" * 80)
+    cfg = OptimizedConfig()
 
-    # Configuration
-    cfg = get_optimized_config()
-
-    # Chemins (À ADAPTER)
-    DATA_ROOT = "/Users/assadiabira/Bureau/Kaggle/Projet_kaggle/data"
+    # Chemins
+    DATA_ROOT = "../data"
     TRAIN_CSV = f"{DATA_ROOT}/csv/X_train.csv"
     TRAIN_Y_CSV = f"{DATA_ROOT}/csv/y_train.csv"
     VAL_CSV = f"{DATA_ROOT}/csv/X_val.csv"
     VAL_Y_CSV = f"{DATA_ROOT}/csv/y_val.csv"
     DICOM_ROOT = f"{DATA_ROOT}/train"
 
-    # Vérification fichiers
+    # Vérification
     for path in [TRAIN_CSV, TRAIN_Y_CSV, VAL_CSV, VAL_Y_CSV]:
         if not Path(path).exists():
             print(f"❌ Fichier manquant: {path}")
             return
 
-    # Trainer
-    trainer = ComprehensiveTrainer(cfg)
-
     # Entraînement
-    trainer.fit(
-        train_csv=TRAIN_CSV,
-        val_csv=VAL_CSV,
-        train_y_csv=TRAIN_Y_CSV,
-        val_y_csv=VAL_Y_CSV,
-        dicom_root=DICOM_ROOT
-    )
+    trainer = MpsTrainer(cfg)
+    trainer.fit(TRAIN_CSV, VAL_CSV, TRAIN_Y_CSV, VAL_Y_CSV, DICOM_ROOT)
 
 
 if __name__ == "__main__":

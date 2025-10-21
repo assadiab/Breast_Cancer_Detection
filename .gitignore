@@ -5,3 +5,4 @@
 .idea
 pixi.lock
 /tests/dicom_output/
+*.dcm
