@@ -1,6 +1,6 @@
 [workspace]
 authors = ["assadiab <assa.diabira@etu.u-paris.fr>"]
-channels = ["conda-forge"]
+channels = ["conda-forge","radiomics"]
 name = "Projet_kaggle"
 platforms = ["osx-arm64"]
 version = "0.1.0"
@@ -21,3 +21,10 @@ seaborn = ">=0.13.2,<0.14"
 imageio = ">=2.37.0,<3"
 pyarrow = ">=21.0.0,<22"
 tqdm = ">=4.67.1,<5"
+monai = ">=1.5.1,<2"
+numpy = ">=2.3.3,<3"
+scipy = ">=1.16.2,<2"
+scikit-image = ">=0.25.2,<0.26"
+versioneer = ">=0.29,<0.30"
+setuptools = ">=80.9.0,<81"
+wheel = ">=0.45.1,<0.46"
