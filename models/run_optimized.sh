@@ -7,4 +7,4 @@ export KMP_DUPLICATE_LIB_OK=TRUE
 echo "🚀 Démarrage avec GPU Apple MPS..."
 echo ""
 
-pixi run python /Users/assadiabira/Bureau/Kaggle/Projet_kaggle/models/train.py
+pixi run python "/Users/assadiabira/Library/Mobile Documents/com~apple~CloudDocs/Cours/M2/S1/Intelligence Artificielle/Projets/Projet Kaggle/Kaggle/Projet_kaggle/models/train.py"

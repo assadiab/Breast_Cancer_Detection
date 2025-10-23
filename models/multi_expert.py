@@ -250,7 +250,7 @@ class CrossModalFusion(nn.Module):
 class OptimizedMultiExpertModel(nn.Module):
     """Modèle multi-expert optimisé pour MPS avec transfer learning"""
 
-    def __init__(self, embed_dim: int = 256, use_checkpoint: bool = True):
+    def __init__(self, embed_dim: int = 512, use_checkpoint: bool = True):
         super().__init__()
         self.embed_dim = embed_dim
 
@@ -261,7 +261,13 @@ class OptimizedMultiExpertModel(nn.Module):
         self.segment = EfficientSegmentHead(out_dim=embed_dim)
 
         # Fusion
-        self.fusion = CrossModalFusion(embed_dim=embed_dim, num_heads=4, num_experts=4)
+        #self.fusion = CrossModalFusion(embed_dim=embed_dim, num_heads=4, num_experts=4)
+        from models.improved_fusion_v2 import ImprovedCrossModalFusion
+        self.fusion = ImprovedCrossModalFusion(
+            embed_dim=embed_dim,
+            num_heads=4,
+            num_experts=4
+        )
 
         # Cache pour low-res images
         self._low_res_cache = {}

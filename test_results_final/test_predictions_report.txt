@@ -1,0 +1,31 @@
+================================================================================
+RAPPORT DE TEST - MEILLEUR MODÈLE
+================================================================================
+
+🎯 PERFORMANCE SUR TEST SET:
+----------------------------------------
+F1 Score:          0.2085
+AUC-ROC:           0.6698
+AUC-PR:            0.1594
+Precision:         0.2038
+Recall:            0.2133
+Accuracy:          0.8790
+Optimal Threshold: 0.605
+
+🎲 MATRICE DE CONFUSION:
+----------------------------------------
+Vrai Négatifs: 1733
+Faux Positifs: 125
+Faux Négatifs: 118
+Vrai Positifs: 32
+
+📋 RAPPORT DE CLASSIFICATION:
+----------------------------------------
+              precision    recall  f1-score   support
+
+     Négatif     0.9363    0.9327    0.9345      1858
+     Positif     0.2038    0.2133    0.2085       150
+
+    accuracy                         0.8790      2008
+   macro avg     0.5700    0.5730    0.5715      2008
+weighted avg     0.8815    0.8790    0.8802      2008
