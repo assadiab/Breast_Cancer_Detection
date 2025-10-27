@@ -1,0 +1,20 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+.gitattributes
+.idea
+pixi.lock
+/tests/dicom_output/
+*.dcm
+/tests/dicom_output/test/
+/tests/dicom_output/train/
+/tests/dicom_output/val/
+/checkpoints_models
+/data
+/pyradiomics
+/test_results_final
+/tests
+/tests_models
+/training_test
+/visualizations
+Sujets.pdf
