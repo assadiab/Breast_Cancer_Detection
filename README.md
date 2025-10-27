@@ -11,10 +11,10 @@ Breast cancer is the most common cancer worldwide. In 2020, there were 2.3 milli
 This is a **collaborative project** with four different model architectures.
 Each team member maintains their model in a separate directory under **[models/](models)**.
 
-1. **[DIABIRA](models/DIABIRA)** - Multi-Head Ensemble Architecture
-2. **[ABBASI](models/ABBASI)** - Advanced Deep Learning Approach
-3. **[MANOUR](models/MANOUR)** - Specialized CNN Model
-4. **[BENHAMOUCHE](models/BENHAMOUCHE)** - Hybrid Architecture
+1. **[DIABIRA](https://github.com/assadiab)** - Multi-Head Ensemble Architecture | [Code](models/DIABIRA)
+2. **[ABBASI](https://github.com/a-Tahreem)** - Advanced Deep Learning Approach | [Code](models/ABBASI)
+3. **[MANOUR](https://github.com/inesmanour)** - Specialized CNN Model | [Code](models/MANOUR)
+4. **[BENHAMOUCHE](https://github.com/sofiabenhamouche)** - Hybrid Architecture | [Code](models/BENHAMOUCHE)
 
 ### Objectives
 
