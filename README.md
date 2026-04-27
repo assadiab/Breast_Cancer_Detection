@@ -1,127 +1,220 @@
 # 🎗️ Breast Cancer Detection
 
-## Overview
+AI-assisted breast cancer detection on screening mammography — [RSNA Kaggle Competition](https://www.kaggle.com/competitions/rsna-breast-cancer-detection).
 
-This project provides innovative solutions for the [RSNA Screening Mammography Breast Cancer Detection competition](https://www.kaggle.com/competitions/rsna-breast-cancer-detection) organized by the Radiological Society of North America (RSNA) in partnership with Kaggle.
+**Collaborative project — M2 Biologie-Informatique, Université Paris Cité**  
+Encadrants : Tatiana Galochkina · Frédéric Guyon · Jean-Christophe Gelly
 
-Breast cancer is the most common cancer worldwide. In 2020, there were 2.3 million new diagnoses and 685,000 deaths. Our solutions aim to develop AI systems capable of assisting radiologists in early breast cancer detection on screening mammograms.
+---
 
-### Team Collaboration
+## Team
 
-This is a **collaborative project** with four different model architectures.
-Each team member maintains their model in a separate directory under **[models/](models)**.
+| Member | Model | Architecture |
+|--------|-------|-------------|
+| **[DIABIRA](models/DIABIRA)** | Multi-Head Expert (v3) | 4 medical backbones + cross-attention fusion |
+| [ABBASI](models/ABBASI) | Advanced DL | — |
+| [MANOUR](models/MANOUR) | Specialized CNN | — |
+| [BENHAMOUCHE](models/BENHAMOUCHE) | Hybrid Architecture | — |
 
-1. **[DIABIRA](https://github.com/assadiab)** - Multi-Head Ensemble Architecture | [Code](models/DIABIRA)
-2. **[ABBASI](https://github.com/a-Tahreem)** - Advanced Deep Learning Approach | [Code](models/ABBASI)
-3. **[MANOUR](https://github.com/inesmanour)** - Specialized CNN Model | [Code](models/MANOUR)
-4. **[BENHAMOUCHE](https://github.com/sofiabenhamouche)** - Hybrid Architecture | [Code](models/BENHAMOUCHE)
-
-### Objectives
-
-- **Early Detection**: Identify cancer signs on screening mammograms
-- **High Accuracy**: Maximize sensitivity while minimizing false positives
-- **Robustness**: Handle severe class imbalance (~7% positive cases)
-- **Performance**: Optimize GPU/CPU resource utilization for efficient training
-- **Comparison**: Evaluate multiple architectural approaches
+---
 
 ## Project Structure
 
 ```
 Breast_Cancer_Detection/
+├── main.py                        ← entry point : train / eval / infer
+├── inference.py                   ← load model + predict on DICOM files
+├── requirements.txt
 ├── README.md
-├── pixi.toml                      # Pixi configuration
 ├── .gitignore
-├── rsna_data-eda.ipynb           # Exploratory Data Analysis
 │
-├── core/                          # Core utilities and shared modules
-│   ├── __init__.py
-│   ├── configuration.py          # Configuration management
-│   ├── dataset_manager.py        # Dataset management utilities
-│   └── loader.py                 # Data loading utilities
+├── core/                          ← shared utilities
+│   ├── configuration.py
+│   ├── dataset_manager.py
+│   └── loader.py
 │
-├── preprocess/                    # Preprocessing modules
-│   ├── __init__.py
-│   ├── cropping.py               # Image cropping utilities
-│   ├── resampler.py              # Resampling operations
-│   └── windowing.py              # Intensity windowing
+├── preprocess/                    ← DICOM preprocessing pipeline
+│   ├── pipeline.py                ← PreprocessPipeline (5 modes)
+│   ├── cropping.py                ← ROI crop + pectoral muscle removal
+│   ├── windowing.py               ← adaptive windowing by BI-RADS density
+│   └── resampler.py               ← isotropic resampling
 │
-├── models/                        # Model architectures (4 approaches)
-│   ├── DIABIRA/                
-│   ├── ABBASI/                  
-│   ├── MANOUR/                 
-│   └── BENHAMOUCHE/           
+├── models/
+│   └── DIABIRA/                   ← Multi-Head Expert model (Assa Diabira)
+│       ├── multi_head_expert.py   ← 4 expert backbones + fusion
+│       ├── baseline_cnn.py        ← baseline for comparison
+│       ├── losses.py              ← FocalAUCLoss (70% Focal + 30% AUC)
+│       ├── trainer.py             ← Trainer class (OOP)
+│       └── dataset.py             ← MammographyDataset (PyTorch)
 │
-└──data/                          # Data (not versioned)
-    ├── raw/                      # Original DICOM files
-    └── processed/                # Preprocessed data
+├── notebooks/
+│   ├── eda.ipynb                  ← Exploratory Data Analysis
+│   ├── preprocessing_benchmark.ipynb
+│   ├── training_baseline.ipynb
+│   └── training_multihead.ipynb
+│
+└── results/
+    ├── metrics/                   ← JSON metrics from Kaggle runs
+    └── figures/                   ← ROC curves, confusion matrices
 ```
 
-## Exploratory Data Analysis (EDA)
+---
 
-Comprehensive exploratory data analysis is documented in **[rsna_data-eda.ipynb](rsna_data-eda.ipynb)**:
-1. **Data Loading & Validation**: CSV and DICOM file structure
-2. **Statistical Analysis**: Distributions, correlations, chi-square tests
-3. **Visualization**: Class balance, age distribution, site comparison
-4. **Image Analysis**: Sample images, intensity histograms, view types
-5. **Consistency Checks**: CSV-to-image mapping verification
-6. **Insights & Recommendations**: Preprocessing strategy, model requirements
+## Model Architecture — Multi-Head Expert (DIABIRA v3)
 
-### Key Findings
+```
+DICOM image
+    ↓ PreprocessPipeline (crop → adaptive windowing → resize)
+float32 [1, H, W]  (grayscale, values in [0, 1])
+    ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    4 EXPERT BACKBONES                        │
+│  1. EfficientNetV2-S  mammoscreen  (RSNA breast, AUC 0.945) │
+│  2. DenseNet121       TorchXRayVision RSNA X-ray            │
+│  3. ResNet50          RadImageNet (1.35M medical images)     │
+│  4. ConvNeXt-Small    ImageNet-21k (RSNA Kaggle winner)      │
+└─────────────────────────────────────────────────────────────┘
+    ↓ each → 512-dim embedding
+Expert-Aware Fusion:
+  cross-attention (4 heads) → per-expert MLP → dynamic gating (softmax)
+    ↓
+MLP classifier: 512 → 256 → 128 → 1  [GELU, Dropout]
+    ↓
+BCEWithLogitsLoss  (no Sigmoid on model output)
+```
 
-**Dataset Overview:**
--  **54,706 images** from **11,913 patients**
--  Multiple sites and imaging machines
--  **4 images per patient** on average (MLO and CC views, left and right breasts)
+106M parameters total. Freeze backbones for phase 1 → 6.3M trainable.
 
-**Class Imbalance Challenge:**
--  Initial cancer rate: **2.12%** (1,158 cancer images / 54,706 total)
--  Only **4.08%** of patients have cancer (486 / 11,913)
--  Major challenge requiring specialized techniques
+---
 
-## Usage
+## Installation
 
-### 1. Installation with Pixi
 ```bash
-# Clone the repository
-git clone https://github.com/assadiabira/Breast_Cancer_Detection.git
+git clone https://github.com/assadiab/Breast_Cancer_Detection.git
 cd Breast_Cancer_Detection
-
-# Install dependencies with Pixi
-pixi install
-
-# Activate the environment
-pixi shell
+pip install -r requirements.txt
 ```
 
-### 2. Explore the Data (EDA)
+Key dependencies: `torch`, `torchvision`, `timm`, `torchxrayvision`, `monai`, `huggingface_hub`, `safetensors`, `albumentations`, `pydicom`, `opencv-python`, `scikit-learn`.
+
+**Optional — RadImageNet weights for Expert 3 (ResNet50):**
+Download from [Google Drive](https://drive.google.com/file/d/1RHt2GnuOYlc_gcoTETtBDSW73mFyRAtR/view) and place in `checkpoints/radImageNet/`.  
+Expert 1 (mammoscreen) and Expert 2 (TorchXRayVision) download automatically on first run.
+
+---
+
+## Training
+
+### Quick start
 
 ```bash
-# Launch Jupyter notebook
-jupyter notebook rsna_data-eda.ipynb
+# Multi-Head Expert model
+python main.py train \
+  --csv train.csv \
+  --images-dir /path/to/dicom/images \
+  --preprocess-mode full \
+  --epochs 20 --batch-size 8 --lr 1e-4 \
+  --checkpoint-dir checkpoints/
 
-# Or with Pixi
-pixi run jupyter notebook rsna_data-eda.ipynb
+# Baseline CNN
+python main.py train \
+  --csv train.csv \
+  --images-dir /path/to/dicom/images \
+  --model baseline --epochs 30 \
+  --checkpoint-dir checkpoints/baseline/
 ```
 
-### 3. Preprocess the Data
+### Three-phase training (recommended)
 
 ```python
-# Example preprocessing pipeline
-from preprocess.windowing import apply_window
-from preprocess.cropping import crop_breast_region
-from preprocess.resampler import resample_image
+from models.DIABIRA.multi_head_expert import MultiHeadMammoModel
+from models.DIABIRA.trainer import Trainer
 
-# Load DICOM
-import pydicom
-dcm = pydicom.dcmread('path/to/image.dcm')
-image = dcm.pixel_array
+model = MultiHeadMammoModel(embed_dim=512)
 
-# Apply preprocessing
-windowed = apply_window(image)
-cropped = crop_breast_region(windowed)
-resampled = resample_image(cropped, target_size=(224, 224))
+# Phase 1 — frozen backbones (6.3M trainable params)
+model.freeze_backbones()
+Trainer(model, train_loader, val_loader, device, lr=1e-3, n_epochs=10).train()
+
+# Phase 2 — unfreeze last 2 blocks
+model.unfreeze_backbones(last_n_blocks=2)
+Trainer(model, train_loader, val_loader, device, lr=1e-4, n_epochs=10).train()
+
+# Phase 3 — full fine-tuning (106M params)
+model.unfreeze_all()
+Trainer(model, train_loader, val_loader, device, lr=5e-5, n_epochs=10).train()
 ```
 
-### Competition and Datasets
-- [RSNA Screening Mammography Breast Cancer Detection](https://www.kaggle.com/competitions/rsna-breast-cancer-detection)
-- [RSNA Official Challenge Page](https://www.rsna.org/rsnai/ai-image-challenge/screening-mammography-breast-cancer-detection-ai-challenge)
+### Preprocessing modes
+
+```python
+from preprocess.pipeline import PreprocessPipeline
+
+pipeline = PreprocessPipeline(config, mode="full", target_hw=(1024, 512))
+# modes: "raw" | "crop_only" | "window_only" | "full" | "full_iso"
+
+img = pipeline.process_one(patient_id, image_id, laterality, view, density, dicom_path)
+# returns float32 numpy (H, W), values in [0, 1]
+```
+
+### Evaluation & inference
+
+```bash
+# Evaluate on validation set
+python main.py eval \
+  --csv val.csv \
+  --images-dir /path/to/dicom \
+  --checkpoint checkpoints/best_model.pth
+
+# Predict on new DICOM files
+python main.py infer \
+  --images-dir /path/to/new/dicoms \
+  --checkpoint checkpoints/best_model.pth \
+  --output predictions.csv
+```
+
+---
+
+## Preprocessing Pipeline
+
+Three stages applied before model input:
+
+**1. ROI Cropping** — Otsu thresholding → morphological ops → pectoral muscle removal (Hough lines, MLO views) → standardized left orientation → bounding box with mm margins.
+
+**2. Adaptive Windowing** — Density-aware: percentile clipping → gamma correction → CLAHE (relative tile size) → weighted fusion. Tuned per BI-RADS density (A/B/C/D).
+
+**3. Resize** to target resolution (default 1024×512).
+
+---
+
+## Results
+
+| Model | ROC-AUC | PR-AUC | F1 | Recall |
+|-------|---------|--------|-----|--------|
+| EfficientNet-B0 | 0.63 | 0.14 | 0.13 | 0.18 |
+| ConvNeXt-Base | 0.62 | 0.15 | 0.20 | 0.26 |
+| ResNet-50 + Meta | 0.59 | 0.13 | 0.19 | 0.21 |
+| **Multi-Head v1** | **0.66** | **0.15** | **0.22** | **0.23** |
+| **Multi-Head v3** | *in progress — Kaggle GPU* | — | — | — |
+
+Metrics from Kaggle GPU runs → [`results/metrics/`](results/metrics/)
+
+---
+
+## Dataset
+
+[RSNA Screening Mammography Breast Cancer Detection](https://www.kaggle.com/competitions/rsna-breast-cancer-detection) — 54,706 DICOM images, 11,913 patients, 2.12% cancer rate.
+
+Patient-wise stratified split (no data leakage): 70% train / 15% val / 15% test.  
+Class imbalance: `pos_weight=13.7` + FocalLoss (γ=2.5, α=0.75) + patient-aware oversampling.
+
+Data is not versioned here (DICOM files too large for GitHub).
+
+---
+
+## References
+
+- mammoscreen : https://huggingface.co/ianpan/mammoscreen
+- TorchXRayVision : https://github.com/mlmed/torchxrayvision
+- RadImageNet : https://pubs.rsna.org/doi/full/10.1148/ryai.210315
+- RSNA Kaggle winner (ConvNeXt) : https://pmc.ncbi.nlm.nih.gov/articles/PMC11048882/

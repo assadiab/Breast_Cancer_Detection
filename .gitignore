@@ -1,20 +1,50 @@
-# pixi environments
+# ── Environnement pixi ──────────────────────────────────────────────────────
 .pixi/*
 !.pixi/config.toml
-.gitattributes
-.idea
 pixi.lock
-/tests/dicom_output/
+
+# ── Notes internes (ne jamais pusher) ────────────────────────────────────────
+CONTEXT.md
+PREPROCESS.md
+
+# ── Données (trop lourdes pour GitHub) ───────────────────────────────────────
+data/
+data/raw/
+data/processed/
 *.dcm
-/tests/dicom_output/test/
-/tests/dicom_output/train/
-/tests/dicom_output/val/
-/checkpoints_models
-/data
-/pyradiomics
-/test_results_final
-/tests
-/tests_models
-/training_test
-/visualizations
-Sujets.pdf
+*.h5
+*.hdf5
+dicom_output/
+train.csv
+df_final.csv
+
+# ── Poids de modèles ─────────────────────────────────────────────────────────
+checkpoints/
+*.pth
+*.pt
+*.safetensors
+
+# ── ZIP Kaggle Dataset (généré localement) ───────────────────────────────────
+rsna-breast-cancer-code.zip
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# ── OS / IDE ──────────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.gitattributes
+
+# ── Logs & expériences ────────────────────────────────────────────────────────
+wandb/
+runs/
+
+# ── Ancien code (non versionné) ───────────────────────────────────────────────
+old/
+
+# ── Scripts de tests locaux (pas des livrables) ───────────────────────────────
+test_model.py
+train_compare.py
