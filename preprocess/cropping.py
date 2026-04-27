@@ -279,11 +279,21 @@ class Cropping:
 
     def process_one(self, patient_id: int, image_id: int, laterality: str, view: str,
                     dicom_path: str) -> Dict[str, Any]:
-        """Traite une seule image - version SRP"""
-        # 1) Chargement pour ROI via Loader
-        img01, spacing = self.loader.load_dicom_for_roi(dicom_path)
+        """
+        Traite une seule image - version SRP.
 
-        # 2) Segmentation du sein
+        Corrections:
+          C1 — une seule lecture DICOM via load_dicom_full() (supprime double load)
+          C2 — soft_tanh_norm supprimée : le windowing gère la normalisation en aval.
+               process_one retourne raw_crop (float32 calibré) tel quel.
+        """
+        # 1) Lecture unique — retourne img01 (pour segmentation) + img_raw + spacing (fix C1)
+        loaded = self.loader.load_dicom_full(dicom_path)
+        img01 = loaded["img01"]
+        img_raw = loaded["img_raw"]
+        spacing = loaded["spacing"]
+
+        # 2) Segmentation du sein (sur img01 normalisé)
         mask, _ = self.breast_mask(img01)
 
         # 3) Retrait pectoral + érosion
@@ -320,19 +330,15 @@ class Cropping:
             # Raffinement vertical
             y0, y1 = self.refine_vertical_bounds(maskO, y0, y1, spacing_mm=spacing)
 
-        # 6) Crop modèle
-        img_lin, _ = self.loader.load_dicom_linear(dicom_path)
-        if flipped:
-            img_lin = np.ascontiguousarray(np.fliplr(img_lin))
+        # 6) Crop sur img_raw (pas img01, pas de double normalisation — fix C2)
+        img_raw_oriented = np.ascontiguousarray(np.fliplr(img_raw)) if flipped else img_raw
+        raw_crop = img_raw_oriented[y0:y1, x0:x1].astype(np.float32)
 
-        raw_crop = img_lin[y0:y1, x0:x1].astype(np.float32)
-        crop_model = self.soft_tanh_norm(raw_crop)
-
-        # Redimensionnement optionnel
+        # Redimensionnement optionnel (préserve les valeurs brutes)
         target_hw = self.roi_cfg.get("target_hw")
         if target_hw is not None:
             H, W = target_hw
-            crop_model = cv.resize(crop_model, (W, H), interpolation=cv.INTER_AREA)
+            raw_crop = cv.resize(raw_crop, (W, H), interpolation=cv.INTER_AREA)
 
         return {
             'patient_id': patient_id,
@@ -342,9 +348,8 @@ class Cropping:
             'bbox': [int(y0), int(x0), int(y1), int(x1)],
             'flipped': bool(flipped),
             'spacing': {'row': float(spacing[0]), 'col': float(spacing[1])},
-            'crop_shape': crop_model.shape,
-            'crop_model': crop_model,
-            'raw_crop': raw_crop
+            'crop_shape': raw_crop.shape,
+            'raw_crop': raw_crop,
         }
 
     def process_dataframe(self, df: pd.DataFrame, output_dir: Path, subset_n: int = None) -> List[Dict[str, Any]]:

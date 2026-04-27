@@ -1,6 +1,9 @@
+import logging
 import cv2
 import numpy as np
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Windowing:
@@ -51,8 +54,7 @@ class Windowing:
             }
         }
 
-        print(f"[Windowing] Initialized - Adaptive percentile method")
-        print(f"[Windowing] Output range: {preserve_range}")
+        logger.debug("Windowing initialized — adaptive percentile, output range %s", preserve_range)
 
     def process_one(
             self,
@@ -82,7 +84,7 @@ class Windowing:
 
         img_min, img_max = image.min(), image.max()
         if img_max - img_min < 1e-8:
-            print("[Windowing] WARNING: Image has no contrast")
+            logger.warning("Image has no contrast — returning zeros")
             return np.zeros_like(image, dtype=np.float32)
 
         # Convertir en float32 si nécessaire
@@ -154,10 +156,13 @@ class Windowing:
         # Convertir en uint8 pour OpenCV CLAHE
         img_uint8 = (img_gamma * 255).astype(np.uint8)
 
-        # Créer et appliquer CLAHE
+        # Créer et appliquer CLAHE — taille de tuile relative à l'image (W2)
+        h, w = img_uint8.shape
+        tile_h = max(2, h // 64)
+        tile_w = max(2, w // 64)
         clahe = cv2.createCLAHE(
-            clipLimit=params['clahe_clip'],  # Limite d'amplification du contraste
-            tileGridSize=(16, 16)  # Taille des tuiles (16x16 = bon compromis)
+            clipLimit=params['clahe_clip'],
+            tileGridSize=(tile_h, tile_w)
         )
         img_clahe = clahe.apply(img_uint8).astype(np.float32) / 255.0
 
@@ -172,23 +177,21 @@ class Windowing:
 
     def _normalize_to_range(self, image: np.ndarray) -> np.ndarray:
         """
-        Normalise l'image dans preserve_range.
+        Mappe l'image (supposée dans [0, 1]) vers preserve_range par simple
+        mise à l'échelle + clip. Ne re-étire PAS min→max, ce qui préserverait
+        l'effet du windowing adaptatif par densité. (fix W1)
 
         Args:
-            image: Image en float32, supposée dans [0, 1]
+            image: Image float32 issue du pipeline adaptatif, valeurs ∈ [0, 1]
 
         Returns:
-            Image normalisée dans preserve_range
+            Image dans preserve_range, shape inchangée
         """
         min_out, max_out = self.preserve_range
-
-        # Sécurité: re-normaliser si hors [0, 1]
-        img_min, img_max = image.min(), image.max()
-        if img_max - img_min > 1e-8:
-            image = (image - img_min) / (img_max - img_min)
-
-        # Mapper vers preserve_range
-        return image * (max_out - min_out) + min_out
+        return np.clip(
+            image * (max_out - min_out) + min_out,
+            min_out, max_out
+        ).astype(np.float32)
 
     def process_batch(
             self,
