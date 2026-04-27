@@ -30,10 +30,10 @@ logger = logging.getLogger(__name__)
 
 def run_train(args: argparse.Namespace) -> None:
     from torch.utils.data import DataLoader
-    from models.DIABIRA.multi_head_expert import MultiHeadMammoModel
-    from models.DIABIRA.dataset import MammographyDataset
-    from models.DIABIRA.trainer import Trainer
-    from models.DIABIRA.imbalanced_strategies import BalancedPatientSampler
+    from models.multi_head_expert import MultiHeadMammoModel
+    from models.dataset import MammographyDataset
+    from models.trainer import Trainer
+    from models.dataset import BalancedPatientSampler
 
     device = _get_device(args.device)
     df = _load_and_split_csv(args.csv)
@@ -85,8 +85,8 @@ def run_train(args: argparse.Namespace) -> None:
 
 def run_eval(args: argparse.Namespace) -> None:
     from torch.utils.data import DataLoader
-    from models.DIABIRA.multi_head_expert import MultiHeadMammoModel
-    from models.DIABIRA.dataset import MammographyDataset
+    from models.multi_head_expert import MultiHeadMammoModel
+    from models.dataset import MammographyDataset
     from sklearn.metrics import roc_auc_score, classification_report
 
     device = _get_device(args.device)

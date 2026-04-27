@@ -235,3 +235,38 @@ class MammographyDataset(Dataset):
             mask = patient_ids == pid
             agg[i] = preds[mask].max() if method == "max" else preds[mask].mean()
         return agg, unique
+
+
+class BalancedPatientSampler(torch.utils.data.Sampler):
+    """
+    Sampler patient-aware pour gérer le déséquilibre de classes.
+
+    Surreprésente les patients positifs (cancer=1) selon pos_weight.
+    Garantit que chaque epoch voit tous les positifs + un sous-ensemble
+    des négatifs de taille proportionnelle.
+
+    Args:
+        patient_ids: array (N,) des patient_id par image
+        labels:      array (N,) des labels cancer (0/1) par image
+        pos_weight:  ratio négatifs/positifs souhaité (default 13.7)
+    """
+
+    def __init__(self, patient_ids: np.ndarray, labels: np.ndarray, pos_weight: float = 13.7):
+        self.patient_ids = np.asarray(patient_ids)
+        self.labels = np.asarray(labels)
+        self.pos_weight = pos_weight
+
+        self.pos_idx = np.where(self.labels == 1)[0]
+        self.neg_idx = np.where(self.labels == 0)[0]
+
+        # Nombre de négatifs à garder par epoch
+        self.n_neg = min(len(self.neg_idx), int(len(self.pos_idx) * pos_weight))
+
+    def __iter__(self):
+        neg_sample = np.random.choice(self.neg_idx, size=self.n_neg, replace=False)
+        indices = np.concatenate([self.pos_idx, neg_sample])
+        np.random.shuffle(indices)
+        return iter(indices.tolist())
+
+    def __len__(self):
+        return len(self.pos_idx) + self.n_neg

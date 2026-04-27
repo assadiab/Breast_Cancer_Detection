@@ -163,7 +163,7 @@ def _resolve_device(device_str: str) -> torch.device:
 
 
 def _load_model(checkpoint_path: str, device: torch.device):
-    from models.DIABIRA.multi_head_expert import MultiHeadMammoModel
+    from models.multi_head_expert import MultiHeadMammoModel
 
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint introuvable : {checkpoint_path}")

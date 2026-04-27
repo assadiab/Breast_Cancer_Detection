@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score
 
-from models.DIABIRA.losses import FocalAUCLoss
+from models.losses import FocalAUCLoss
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ class Trainer:
         probs = 1 / (1 + np.exp(-all_logits))  # sigmoid
 
         # Patient-level aggregation (max pooling par patient)
-        from models.DIABIRA.dataset import MammographyDataset
+        from models.dataset import MammographyDataset
         patient_probs, unique_pids = MammographyDataset.patient_level_aggregate(
             probs, all_pids, method="max"
         )

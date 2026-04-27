@@ -7,14 +7,10 @@ Encadrants : Tatiana Galochkina · Frédéric Guyon · Jean-Christophe Gelly
 
 ---
 
-## Team
+## Author
 
-| Member | Model | Architecture |
-|--------|-------|-------------|
-| **[DIABIRA](models/DIABIRA)** | Multi-Head Expert (v3) | 4 medical backbones + cross-attention fusion |
-| [ABBASI](models/ABBASI) | Advanced DL | — |
-| [MANOUR](models/MANOUR) | Specialized CNN | — |
-| [BENHAMOUCHE](models/BENHAMOUCHE) | Hybrid Architecture | — |
+**Assa Diabira** — M2 Biologie-Informatique, Université Paris Cité  
+Multi-Head Expert model: 4 medical backbones + cross-attention fusion
 
 ---
 
@@ -39,13 +35,12 @@ Breast_Cancer_Detection/
 │   ├── windowing.py               ← adaptive windowing by BI-RADS density
 │   └── resampler.py               ← isotropic resampling
 │
-├── models/
-│   └── DIABIRA/                   ← Multi-Head Expert model (Assa Diabira)
-│       ├── multi_head_expert.py   ← 4 expert backbones + fusion
-│       ├── baseline_cnn.py        ← baseline for comparison
-│       ├── losses.py              ← FocalAUCLoss (70% Focal + 30% AUC)
-│       ├── trainer.py             ← Trainer class (OOP)
-│       └── dataset.py             ← MammographyDataset (PyTorch)
+├── models/                        ← Multi-Head Expert model
+│   ├── multi_head_expert.py       ← 4 expert backbones + fusion
+│   ├── baseline_cnn.py            ← baseline for comparison
+│   ├── losses.py                  ← FocalAUCLoss (70% Focal + 30% AUC)
+│   ├── trainer.py                 ← Trainer class (OOP)
+│   └── dataset.py                 ← MammographyDataset (PyTorch)
 │
 ├── notebooks/
 │   ├── eda.ipynb                  ← Exploratory Data Analysis
@@ -127,8 +122,8 @@ python main.py train \
 ### Three-phase training (recommended)
 
 ```python
-from models.DIABIRA.multi_head_expert import MultiHeadMammoModel
-from models.DIABIRA.trainer import Trainer
+from models.multi_head_expert import MultiHeadMammoModel
+from models.trainer import Trainer
 
 model = MultiHeadMammoModel(embed_dim=512)
 
