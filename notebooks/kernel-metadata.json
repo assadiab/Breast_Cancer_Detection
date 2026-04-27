@@ -1,0 +1,14 @@
+{
+  "id": "testlolll/rsna-breast-cancer-assa",
+  "title": "RSNA Breast Cancer Detection - Assa",
+  "code_file": "rsna-assa-complete.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": ["testlolll/rsna-breast-cancer-code-assa"],
+  "competition_sources": ["rsna-breast-cancer-detection"],
+  "kernel_sources": []
+}
