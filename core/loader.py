@@ -2,6 +2,7 @@ from core.configuration import Config
 from typing import Optional
 import pandas as pd
 import os
+import tempfile
 import numpy as np
 import pydicom
 import shutil
@@ -65,7 +66,7 @@ class Loader:
                     print(f"[pydicom] decompressed: {ts.name}")
             except Exception as e:
                 # fallback: gdcmconv
-                tmp_path = f"{dicom_path}.tmp.dcm"
+                tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(dicom_path) + ".tmp.dcm")
                 if shutil.which("gdcmconv") is None:
                     raise RuntimeError(f"Compressed DICOM {ts} cannot be handled (gdcmconv missing). Original error: {e}")
                 os.system(f"gdcmconv -w {dicom_path} {tmp_path}")
@@ -152,7 +153,7 @@ class Loader:
                 if verbose:
                     print(f"[pydicom] decompressed: {ts.name}")
             except Exception as e:
-                tmp_path = f"{dicom_path}.tmp.dcm"
+                tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(dicom_path) + ".tmp.dcm")
                 if shutil.which("gdcmconv") is None:
                     raise RuntimeError(
                         f"Compressed DICOM {ts} cannot be handled (gdcmconv missing). Error: {e}"

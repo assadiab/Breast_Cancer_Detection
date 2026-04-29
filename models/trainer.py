@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 from typing import Dict, Optional
@@ -5,7 +6,6 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
@@ -16,12 +16,40 @@ from models.losses import FocalAUCLoss
 logger = logging.getLogger(__name__)
 
 
+# ─────────────────────────────────────────────────────────────
+# Mixed-precision helpers (CUDA fp16 / MPS bf16 / CPU no-op)
+# ─────────────────────────────────────────────────────────────
+
+def get_autocast_context(device: torch.device, enabled: bool = True):
+    """Context manager mixed-precision adapté au device."""
+    if not enabled:
+        return contextlib.nullcontext()
+    if device.type == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    if device.type == "mps":
+        # MPS supporte bfloat16 depuis PyTorch 2.0
+        return torch.autocast(device_type="mps", dtype=torch.bfloat16)
+    # CPU — pas de mixed precision
+    return contextlib.nullcontext()
+
+
+def get_grad_scaler(device: torch.device, enabled: bool = True) -> torch.cuda.amp.GradScaler:
+    """GradScaler uniquement sur CUDA (MPS/CPU non supportés)."""
+    cuda_amp = (device.type == "cuda") and enabled
+    return torch.cuda.amp.GradScaler(enabled=cuda_amp)
+
+
+# ─────────────────────────────────────────────────────────────
+# Trainer
+# ─────────────────────────────────────────────────────────────
+
 class Trainer:
     """
     Boucle d'entraînement OOP pour MultiHeadMammoModel.
 
     Features :
-    - Mixed precision (GradScaler)
+    - Mixed precision adaptée au device (CUDA fp16 / MPS bf16 / CPU no-op)
+    - GradScaler conditionnel CUDA uniquement
     - Gradient clipping (max_norm=1.0)
     - Cosine Annealing LR
     - Early stopping sur AUROC val
@@ -40,17 +68,17 @@ class Trainer:
         n_epochs: int = 20,
         patience: int = 5,
         checkpoint_dir: str = "checkpoints",
-        pos_weight: float = 13.7,
+        pos_weight: float = 10.0,
         use_amp: bool = True,
     ):
-        self.model = model.to(device)
+        self.model        = model.to(device)
         self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.device = device
-        self.n_epochs = n_epochs
-        self.patience = patience
+        self.val_loader   = val_loader
+        self.device       = device
+        self.n_epochs     = n_epochs
+        self.patience     = patience
         self.checkpoint_dir = checkpoint_dir
-        self.use_amp = use_amp and device.type == "cuda"
+        self.use_amp      = use_amp
 
         os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -59,7 +87,7 @@ class Trainer:
             auc_weight=0.3,
             alpha=0.75,
             gamma=2.5,
-            pos_weight=pos_weight,
+            pos_weight=min(pos_weight, 10.0),   # plafonné à 10
         )
 
         self.optimizer = AdamW(
@@ -74,9 +102,9 @@ class Trainer:
             eta_min=1e-6,
         )
 
-        self.scaler = GradScaler(enabled=self.use_amp)
+        self.scaler = get_grad_scaler(device, enabled=use_amp)
 
-        self.best_auroc = 0.0
+        self.best_auroc        = 0.0
         self.epochs_no_improve = 0
         self.history: Dict[str, list] = {
             "train_loss": [], "val_loss": [], "val_auroc": [], "val_f1": []
@@ -84,10 +112,13 @@ class Trainer:
 
     def train(self) -> Dict[str, list]:
         """Lance l'entraînement complet. Retourne l'historique des métriques."""
-        logger.info(f"Début entraînement — {self.n_epochs} epochs, device={self.device}")
+        logger.info(
+            f"Début entraînement — {self.n_epochs} epochs  device={self.device}  "
+            f"amp={self.use_amp}  scaler={'cuda' if self.device.type == 'cuda' else 'off'}"
+        )
 
         for epoch in range(1, self.n_epochs + 1):
-            train_loss = self._train_epoch(epoch)
+            train_loss  = self._train_epoch(epoch)
             val_metrics = self._eval_epoch()
 
             self.scheduler.step()
@@ -99,22 +130,22 @@ class Trainer:
 
             logger.info(
                 f"Epoch {epoch:02d}/{self.n_epochs} | "
-                f"train_loss={train_loss:.4f} | "
-                f"val_loss={val_metrics['loss']:.4f} | "
-                f"AUROC={val_metrics['auroc']:.4f} | "
-                f"F1={val_metrics['f1']:.4f} | "
+                f"train={train_loss:.4f} | val={val_metrics['loss']:.4f} | "
+                f"AUROC={val_metrics['auroc']:.4f} | F1={val_metrics['f1']:.4f} | "
                 f"Recall={val_metrics['recall']:.4f} | "
                 f"LR={self.scheduler.get_last_lr()[0]:.2e}"
             )
 
             if val_metrics["auroc"] > self.best_auroc:
-                self.best_auroc = val_metrics["auroc"]
+                self.best_auroc        = val_metrics["auroc"]
                 self.epochs_no_improve = 0
                 self._save_checkpoint(epoch, val_metrics["auroc"])
             else:
                 self.epochs_no_improve += 1
                 if self.epochs_no_improve >= self.patience:
-                    logger.info(f"Early stopping à l'epoch {epoch} (best AUROC={self.best_auroc:.4f})")
+                    logger.info(
+                        f"Early stopping epoch {epoch} (best AUROC={self.best_auroc:.4f})"
+                    )
                     break
 
         return self.history
@@ -123,13 +154,13 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
 
-        for batch_idx, (images, labels, _patient_ids) in enumerate(self.train_loader):
-            images = images.to(self.device)
-            labels = labels.to(self.device)
+        for batch_idx, (images, labels, _pids) in enumerate(self.train_loader):
+            images = images.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
 
             self.optimizer.zero_grad()
 
-            with autocast(enabled=self.use_amp):
+            with get_autocast_context(self.device, self.use_amp):
                 logits, _gates = self.model(images)
                 loss_dict = self.criterion(logits.squeeze(1), labels)
                 loss = loss_dict["total"]
@@ -155,13 +186,13 @@ class Trainer:
     def _eval_epoch(self) -> Dict[str, float]:
         self.model.eval()
         all_logits, all_labels, all_pids = [], [], []
-
         total_loss = 0.0
-        for images, labels, patient_ids in self.val_loader:
-            images = images.to(self.device)
-            labels = labels.to(self.device)
 
-            with autocast(enabled=self.use_amp):
+        for images, labels, patient_ids in self.val_loader:
+            images = images.to(self.device, non_blocking=True)
+            labels = labels.to(self.device, non_blocking=True)
+
+            with get_autocast_context(self.device, self.use_amp):
                 logits, _ = self.model(images)
                 loss_dict = self.criterion(logits.squeeze(1), labels)
 
@@ -172,46 +203,43 @@ class Trainer:
 
         all_logits = torch.cat(all_logits).numpy()
         all_labels = torch.cat(all_labels).numpy()
-        all_pids = torch.cat(all_pids).numpy() if isinstance(all_pids[0], torch.Tensor) \
-            else np.concatenate(all_pids)
+        all_pids   = (torch.cat(all_pids).numpy()
+                      if isinstance(all_pids[0], torch.Tensor)
+                      else np.concatenate(all_pids))
 
-        probs = 1 / (1 + np.exp(-all_logits))  # sigmoid
+        probs = 1 / (1 + np.exp(-all_logits))   # sigmoid
 
-        # Patient-level aggregation (max pooling par patient)
         from models.dataset import MammographyDataset
         patient_probs, unique_pids = MammographyDataset.patient_level_aggregate(
             probs, all_pids, method="max"
         )
-        # Labels patient = max des labels images (1 si au moins 1 image cancer)
         patient_labels = np.array([
             all_labels[all_pids == pid].max() for pid in unique_pids
         ])
 
-        # Optimisation du seuil sur val
-        best_thresh, best_f1 = _find_best_threshold(patient_probs, patient_labels)
-        patient_preds = (patient_probs >= best_thresh).astype(int)
+        best_thresh, _ = _find_best_threshold(patient_probs, patient_labels)
+        patient_preds  = (patient_probs >= best_thresh).astype(int)
 
         auroc = roc_auc_score(patient_labels, patient_probs) if patient_labels.sum() > 0 else 0.0
-        f1 = f1_score(patient_labels, patient_preds, zero_division=0)
-        recall = recall_score(patient_labels, patient_preds, zero_division=0)
-        precision = precision_score(patient_labels, patient_preds, zero_division=0)
 
         return {
-            "loss": total_loss / len(self.val_loader),
-            "auroc": auroc,
-            "f1": f1,
-            "recall": recall,
-            "precision": precision,
+            "loss":      total_loss / len(self.val_loader),
+            "auroc":     auroc,
+            "f1":        f1_score(patient_labels, patient_preds, zero_division=0),
+            "recall":    recall_score(patient_labels, patient_preds, zero_division=0),
+            "precision": precision_score(patient_labels, patient_preds, zero_division=0),
             "threshold": best_thresh,
         }
 
     def _save_checkpoint(self, epoch: int, auroc: float) -> None:
-        path = os.path.join(self.checkpoint_dir, f"best_model_auroc{auroc:.4f}_ep{epoch}.pt")
+        path = os.path.join(
+            self.checkpoint_dir, f"best_model_auroc{auroc:.4f}_ep{epoch}.pt"
+        )
         torch.save({
-            "epoch": epoch,
-            "model_state_dict": self.model.state_dict(),
+            "epoch":              epoch,
+            "model_state_dict":   self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "auroc": auroc,
+            "auroc":              auroc,
         }, path)
         logger.info(f"Checkpoint sauvegardé : {path}")
 
@@ -226,7 +254,7 @@ def _find_best_threshold(probs: np.ndarray, labels: np.ndarray) -> tuple:
     best_f1, best_thresh = 0.0, 0.5
     for t in np.linspace(0.05, 0.95, 91):
         preds = (probs >= t).astype(int)
-        f1 = f1_score(labels, preds, zero_division=0)
+        f1    = f1_score(labels, preds, zero_division=0)
         if f1 > best_f1:
             best_f1, best_thresh = f1, t
     return best_thresh, best_f1
