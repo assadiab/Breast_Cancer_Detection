@@ -10,7 +10,8 @@
   "enable_internet": true,
   "dataset_sources": [
     "testlolll/rsna-breast-cancer-code-assa",
-    "testlolll/rsna-breast-cancer-cache-full-assa"
+    "testlolll/rsna-breast-cancer-cache-full-assa",
+    "testlolll/testresults"
   ],
   "competition_sources": [
     "rsna-breast-cancer-detection"
