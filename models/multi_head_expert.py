@@ -254,8 +254,15 @@ class XRayDenseNetTextureExpert(nn.Module):
         try:
             import torchxrayvision as xrv
             xrv_model = xrv.models.DenseNet(weights="densenet121-res224-rsna")
-            # Extraire les features (CNN sans classifieur)
-            self.backbone = xrv_model.features
+            # Conserver normalize + features dans un wrapper pour ne pas bypasser la normalisation interne
+            class _XRVWrapper(nn.Module):
+                def __init__(self, m):
+                    super().__init__()
+                    self.normalize = m.normalize
+                    self.features  = m.features
+                def forward(self, x):
+                    return self.features(self.normalize(x))
+            self.backbone = _XRVWrapper(xrv_model)
             feat_dim = 1024  # DenseNet121 features dimension
             logger.info("XRayDenseNetTextureExpert: TorchXRayVision RSNA loaded (feat_dim=%d)", feat_dim)
         except Exception as e:

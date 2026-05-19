@@ -65,8 +65,12 @@ class Loader:
                 if verbose:
                     print(f"[pydicom] decompressed: {ts.name}")
             except Exception as e:
-                # fallback: gdcmconv
-                tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(dicom_path) + ".tmp.dcm")
+                # fallback: gdcmconv — uuid pour éviter les race conditions multithreading
+                import uuid as _uuid
+                tmp_path = os.path.join(
+                    tempfile.gettempdir(),
+                    f"{os.path.basename(dicom_path)}_{_uuid.uuid4().hex}.tmp.dcm"
+                )
                 if shutil.which("gdcmconv") is None:
                     raise RuntimeError(f"Compressed DICOM {ts} cannot be handled (gdcmconv missing). Original error: {e}")
                 os.system(f"gdcmconv -w {dicom_path} {tmp_path}")
@@ -153,7 +157,11 @@ class Loader:
                 if verbose:
                     print(f"[pydicom] decompressed: {ts.name}")
             except Exception as e:
-                tmp_path = os.path.join(tempfile.gettempdir(), os.path.basename(dicom_path) + ".tmp.dcm")
+                import uuid as _uuid
+                tmp_path = os.path.join(
+                    tempfile.gettempdir(),
+                    f"{os.path.basename(dicom_path)}_{_uuid.uuid4().hex}.tmp.dcm"
+                )
                 if shutil.which("gdcmconv") is None:
                     raise RuntimeError(
                         f"Compressed DICOM {ts} cannot be handled (gdcmconv missing). Error: {e}"

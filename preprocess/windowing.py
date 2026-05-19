@@ -162,7 +162,7 @@ class Windowing:
         tile_w = max(2, w // 64)
         clahe = cv2.createCLAHE(
             clipLimit=params['clahe_clip'],
-            tileGridSize=(tile_h, tile_w)
+            tileGridSize=(tile_w, tile_h)   # cv2 attend (cols, rows) = (width, height)
         )
         img_clahe = clahe.apply(img_uint8).astype(np.float32) / 255.0
 

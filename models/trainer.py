@@ -33,10 +33,14 @@ def get_autocast_context(device: torch.device, enabled: bool = True):
     return contextlib.nullcontext()
 
 
-def get_grad_scaler(device: torch.device, enabled: bool = True) -> torch.cuda.amp.GradScaler:
+def get_grad_scaler(device: torch.device, enabled: bool = True):
     """GradScaler uniquement sur CUDA (MPS/CPU non supportés)."""
     cuda_amp = (device.type == "cuda") and enabled
-    return torch.cuda.amp.GradScaler(enabled=cuda_amp)
+    # torch.amp.GradScaler est l'API stable depuis PyTorch 2.3+
+    try:
+        return torch.amp.GradScaler("cuda", enabled=cuda_amp)
+    except TypeError:
+        return torch.cuda.amp.GradScaler(enabled=cuda_amp)  # fallback PyTorch <2.3
 
 
 # ─────────────────────────────────────────────────────────────
