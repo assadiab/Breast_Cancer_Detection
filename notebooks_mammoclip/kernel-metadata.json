@@ -1,0 +1,15 @@
+{
+  "id": "testlolll/rsna-mammoclip-assa",
+  "title": "RSNA Mammo-CLIP B5 - Assa",
+  "code_file": "rsna-mammoclip-assa.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "testlolll/rsna-cache-raw-assa"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}
