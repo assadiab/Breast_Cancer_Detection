@@ -12,19 +12,35 @@ os.makedirs(DEST, exist_ok=True)
 
 api = KaggleApi(); api.authenticate()
 
+def list_page(kaggle, token):
+    """Liste une page avec backoff exponentiel sur 429/erreurs réseau."""
+    delay = 5
+    for attempt in range(8):
+        try:
+            req = ApiListKernelSessionOutputRequest()
+            req.user_name = OWNER
+            req.kernel_slug = SLUG
+            req.page_size = 200
+            if token:
+                req.page_token = token
+            return kaggle.kernels.kernels_api_client.list_kernel_session_output(req)
+        except Exception as e:
+            msg = str(e)
+            if '429' in msg or 'Too Many' in msg or 'Connection' in msg or 'timeout' in msg.lower():
+                print(f"  ⏳ rate-limit/réseau (tentative {attempt+1}) — pause {delay}s", flush=True)
+                time.sleep(delay)
+                delay = min(delay * 2, 120)
+            else:
+                raise
+    raise RuntimeError("Échec liste page après 8 tentatives")
+
 token = None
 total = 0
 page = 0
 sess = requests.Session()
 with api.build_kaggle_client() as kaggle:
     while True:
-        req = ApiListKernelSessionOutputRequest()
-        req.user_name = OWNER
-        req.kernel_slug = SLUG
-        req.page_size = 200
-        if token:
-            req.page_token = token
-        resp = kaggle.kernels.kernels_api_client.list_kernel_session_output(req)
+        resp = list_page(kaggle, token)
         files = resp.files or []
         page += 1
         for item in files:
@@ -48,5 +64,6 @@ with api.build_kaggle_client() as kaggle:
         print(f"[page {page}] cumul={total} fichiers — token={'oui' if token else 'FIN'}", flush=True)
         if not token or not files:
             break
+        time.sleep(0.5)  # petit délai pour éviter le rate-limit
 
 print(f"\n✅ Terminé : {total} fichiers dans {DEST}")
