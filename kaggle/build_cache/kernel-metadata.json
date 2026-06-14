@@ -1,0 +1,18 @@
+{
+  "id": "testlolll/rsna-build-cache-1024-assa",
+  "title": "RSNA Build Cache 1024 - Assa",
+  "code_file": "rsna-build-cache-1024.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "testlolll/rsna-cache-1024-todo",
+    "testlolll/rsna-cache-raw-assa"
+  ],
+  "competition_sources": [
+    "rsna-breast-cancer-detection"
+  ],
+  "kernel_sources": []
+}

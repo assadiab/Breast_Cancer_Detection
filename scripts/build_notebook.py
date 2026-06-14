@@ -104,12 +104,15 @@ IMG_SIZE     = 512
 BATCH_SIZE   = 16
 ACCUM_STEPS  = 2       # batch effectif = 32
 NUM_WORKERS  = 4
-N_EPOCHS     = 12
-PATIENCE     = 4
-LR_BACKBONE  = 5e-5    # full fine-tune comme Mammo-CLIP
-LR_HEAD      = 5e-4
-WEIGHT_DECAY = 1e-4
-WARMUP_EPOCHS = 1
+# v2 : 2 phases pour éviter que le fine-tuning détruise les features Mammo-CLIP
+P1_EPOCHS    = 6       # Phase 1 : backbone GELÉ, on entraîne juste la tête
+P2_EPOCHS    = 3       # Phase 2 : fine-tuning TRÈS doux (backbone dégelé, lr 10× plus bas)
+PATIENCE     = 3
+LR_HEAD_P1   = 1e-3    # tête seule, backbone gelé
+LR_BACKBONE  = 1e-5    # phase 2 : très bas pour ne pas casser le pré-entraînement
+LR_HEAD_P2   = 1e-4
+WEIGHT_DECAY = 1e-3    # + de régularisation contre le surapprentissage
+WARMUP_RATIO = 0.1
 
 WORK = '/kaggle/working'
 CKPT_DIR = f'{WORK}/checkpoints'; os.makedirs(CKPT_DIR, exist_ok=True)
@@ -210,7 +213,7 @@ class GeM(nn.Module):
 
 class MammoCLIPModel(nn.Module):
     """EfficientNet-B5 lukemelas (poids Mammo-CLIP) + GeM + tête de classification."""
-    def __init__(self, ckpt_path=None, drop=0.3):
+    def __init__(self, ckpt_path=None, drop=0.5):
         super().__init__()
         # même construction que Mammo-CLIP : EfficientNet.from_name('efficientnet-b5', num_classes=1)
         self.encoder = EfficientNet.from_name('efficientnet-b5', num_classes=1)
@@ -223,9 +226,19 @@ class MammoCLIPModel(nn.Module):
             print("⚠️  Pas de checkpoint Mammo-CLIP — backbone non pré-entraîné !")
 
         self.head = nn.Sequential(
-            nn.Linear(n_features, 512), nn.BatchNorm1d(512), nn.SiLU(),
+            nn.Dropout(drop), nn.Linear(n_features, 512), nn.BatchNorm1d(512), nn.SiLU(),
             nn.Dropout(drop), nn.Linear(512, 1)
         )
+
+    def freeze_backbone(self):
+        for p in self.encoder.parameters():
+            p.requires_grad = False
+        self.encoder.eval()  # fige aussi les BatchNorm (stats du pré-entraînement)
+
+    def unfreeze_backbone(self):
+        for p in self.encoder.parameters():
+            p.requires_grad = True
+        self.encoder.train()
 
     def _load_mammoclip(self, path):
         ckpt = torch.load(path, map_location='cpu', weights_only=False)
@@ -321,29 +334,10 @@ test_loader  = DataLoader(ds_test,  batch_size=BATCH_SIZE*2, shuffle=False,
                           num_workers=NUM_WORKERS, pin_memory=True)
 print(f"✅ Loaders : train={len(ds_train)} val={len(ds_val)} test={len(ds_test)}")""")
 
-# ── Cell 9 : Boucle d'entraînement ───────────────────────────────────────────
-code('''# Optimiseur : LR différentiel backbone vs tête
-backbone_params = list(model.encoder.parameters()) + list(model.pool.parameters())
-head_params     = list(model.head.parameters())
-optimizer = torch.optim.AdamW([
-    {'params': backbone_params, 'lr': LR_BACKBONE},
-    {'params': head_params,     'lr': LR_HEAD},
-], weight_decay=WEIGHT_DECAY)
-
-# pos_weight léger (le sampler fait déjà l'essentiel)
+# ── Cell 9 : Entraînement 2 phases (sélection sur AUROC sein) ────────────────
+code('''_val_df = X_val.assign(cancer=Y_val['cancer'].values)
 _pos = ds_train.labels.sum(); _neg = len(ds_train.labels) - _pos
 criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([min(_neg/_pos, 5.0)]).to(DEVICE))
-
-steps_per_epoch = len(train_loader) // ACCUM_STEPS
-total_steps = steps_per_epoch * N_EPOCHS
-warmup_steps = steps_per_epoch * WARMUP_EPOCHS
-def lr_lambda(step):
-    if step < warmup_steps:
-        return step / max(1, warmup_steps)
-    prog = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-    return 0.5 * (1 + math.cos(math.pi * prog))
-scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
 
 def run_eval(loader, df):
     model.eval(); probs, labs = [], []
@@ -356,48 +350,73 @@ def run_eval(loader, df):
             labs.extend(y.numpy().tolist())
     return compute_metrics(df, probs, labs), probs, labs
 
+# État global : on garde le MEILLEUR checkpoint sur l'AUROC sein (stable à 2% de positifs)
 history = []
-best_pf1, best_state, no_improve = -1, None, 0
-print(f"🚀 Entraînement : {N_EPOCHS} epochs × {steps_per_epoch} steps (batch eff. {BATCH_SIZE*ACCUM_STEPS})")
+best_auroc, best_state, best_tag = -1, None, ""
+
+def train_phase(tag, n_epochs, optimizer, frozen, patience=PATIENCE):
+    global best_auroc, best_state, best_tag
+    steps_per_epoch = max(1, len(train_loader) // ACCUM_STEPS)
+    total = steps_per_epoch * n_epochs
+    warm  = max(1, int(total * WARMUP_RATIO))
+    sched = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda s:
+                s/warm if s < warm else 0.5*(1+math.cos(math.pi*(s-warm)/max(1,total-warm))))
+    scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
+    no_improve = 0
+    print(f"\\n━━━ {tag} : {n_epochs} epochs (backbone {'GELÉ' if frozen else 'dégelé'}) ━━━")
+    for epoch in range(1, n_epochs+1):
+        model.train()
+        if frozen:
+            model.encoder.eval()   # garde les BN du pré-entraînement figées
+        optimizer.zero_grad()
+        run_loss, nb = 0.0, 0
+        for i, (X, y) in enumerate(tqdm(train_loader, desc=f'{tag} E{epoch}/{n_epochs}', leave=False)):
+            X, y = X.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
+            with torch.amp.autocast('cuda', enabled=USE_AMP):
+                loss = criterion(model(X), y) / ACCUM_STEPS
+            scaler.scale(loss).backward()
+            if (i+1) % ACCUM_STEPS == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), 5.0)
+                scaler.step(optimizer); scaler.update()
+                optimizer.zero_grad(); sched.step()
+            run_loss += loss.item()*ACCUM_STEPS; nb += 1
+        tl = run_loss/max(nb,1)
+        m, _, _ = run_eval(val_loader, _val_df)
+        history.append({'phase': tag, 'epoch': epoch, 'train_loss': round(tl,4),
+                        'lr': round(optimizer.param_groups[0]['lr'],6), **m})
+        print(f"{tag} E{epoch} | loss={tl:.4f} | AUROC={m['auroc']:.4f} "
+              f"| AUROC_sein={m['auroc_breast']:.4f} | pF1={m['pf1_breast']:.4f}")
+        if m['auroc_breast'] > best_auroc:
+            best_auroc = m['auroc_breast']; best_tag = f"{tag} E{epoch}"
+            best_state = {k: v.cpu().clone() for k,v in model.state_dict().items()}
+            torch.save(best_state, f"{CKPT_DIR}/mammoclip_b5_best.pth")
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                print(f"⏹ Early stop {tag} E{epoch}"); break
+
 t_start = time.time()
 
-for epoch in range(1, N_EPOCHS+1):
-    model.train(); optimizer.zero_grad()
-    run_loss, nb = 0.0, 0
-    for i, (X, y) in enumerate(tqdm(train_loader, desc=f'Epoch {epoch}/{N_EPOCHS}', leave=False)):
-        X, y = X.to(DEVICE, non_blocking=True), y.to(DEVICE, non_blocking=True)
-        with torch.amp.autocast('cuda', enabled=USE_AMP):
-            logit = model(X)
-            loss = criterion(logit, y) / ACCUM_STEPS
-        scaler.scale(loss).backward()
-        if (i+1) % ACCUM_STEPS == 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-            scaler.step(optimizer); scaler.update()
-            optimizer.zero_grad(); scheduler.step()
-        run_loss += loss.item()*ACCUM_STEPS; nb += 1
-    train_loss = run_loss/max(nb,1)
+# ── PHASE 1 : backbone gelé, on entraîne seulement la tête ───────────────────
+model.freeze_backbone()
+opt1 = torch.optim.AdamW(model.head.parameters(), lr=LR_HEAD_P1, weight_decay=WEIGHT_DECAY)
+train_phase("P1-frozen", P1_EPOCHS, opt1, frozen=True)
 
-    metrics, _, _ = run_eval(val_loader, X_val.assign(cancer=Y_val['cancer'].values))
-    row = {'epoch': epoch, 'train_loss': round(train_loss,4),
-           'lr': round(optimizer.param_groups[0]['lr'],6), **metrics}
-    history.append(row)
-    print(f"E{epoch:2d} | loss={train_loss:.4f} | AUROC={metrics['auroc']:.4f} "
-          f"| pF1_breast={metrics['pf1_breast']:.4f} | F1_breast={metrics['f1_breast']:.4f}")
-
-    if metrics['pf1_breast'] > best_pf1:
-        best_pf1 = metrics['pf1_breast']
-        best_state = {k: v.cpu().clone() for k,v in model.state_dict().items()}
-        torch.save(best_state, f"{CKPT_DIR}/mammoclip_b5_best.pth")
-        no_improve = 0
-    else:
-        no_improve += 1
-        if no_improve >= PATIENCE:
-            print(f"⏹ Early stopping epoch {epoch}")
-            break
+# ── PHASE 2 : fine-tuning très doux (backbone dégelé, lr 10× plus bas) ───────
+if best_state: model.load_state_dict(best_state)  # repart du meilleur de P1
+model.unfreeze_backbone()
+opt2 = torch.optim.AdamW([
+    {'params': model.encoder.parameters(), 'lr': LR_BACKBONE},
+    {'params': model.pool.parameters(),    'lr': LR_BACKBONE},
+    {'params': model.head.parameters(),    'lr': LR_HEAD_P2},
+], weight_decay=WEIGHT_DECAY)
+train_phase("P2-ft", P2_EPOCHS, opt2, frozen=False)
 
 if best_state: model.load_state_dict(best_state)
-print(f"✅ Entraînement terminé en {(time.time()-t_start)/60:.1f} min — best pF1 val = {best_pf1:.4f}")''')
+print(f"\\n✅ Entraînement terminé en {(time.time()-t_start)/60:.1f} min")
+print(f"   Meilleur checkpoint : {best_tag} — AUROC sein val = {best_auroc:.4f}")''')
 
 # ── Cell 10 : Évaluation test + TTA ──────────────────────────────────────────
 code('''# TTA : moyenne image originale + flip horizontal
@@ -420,24 +439,28 @@ for k, v in test_metrics.items():
     print(f"  {k:14s}: {v}")
 
 # Sauvegarde
-results = {'model': 'mammoclip_b5', 'best_pf1_val': best_pf1,
+results = {'model': 'mammoclip_b5', 'best_auroc_breast_val': best_auroc, 'best_tag': best_tag,
            'history': history, 'test_metrics': test_metrics,
            'config': {'img_size': IMG_SIZE, 'batch': BATCH_SIZE*ACCUM_STEPS,
-                      'n_epochs': N_EPOCHS, 'lr_backbone': LR_BACKBONE, 'lr_head': LR_HEAD}}
+                      'p1_epochs': P1_EPOCHS, 'p2_epochs': P2_EPOCHS,
+                      'lr_head_p1': LR_HEAD_P1, 'lr_backbone': LR_BACKBONE, 'lr_head_p2': LR_HEAD_P2}}
 with open(f"{RES_DIR}/mammoclip_b5.json", 'w') as f:
     json.dump(results, f, indent=2)
 print(f"✅ Résultats → {RES_DIR}/mammoclip_b5.json")''')
 
 # ── Cell 11 : Courbes ────────────────────────────────────────────────────────
 code('''import matplotlib.pyplot as plt
-ep = [h['epoch'] for h in history]
+ep = list(range(1, len(history)+1))  # index global (les 2 phases à la suite)
+_p1 = sum(1 for h in history if h['phase'].startswith('P1'))
 fig, ax = plt.subplots(1, 2, figsize=(13,4))
 ax[0].plot(ep, [h['train_loss'] for h in history], 'o-', label='train loss')
-ax[0].set_title('Loss'); ax[0].set_xlabel('epoch'); ax[0].legend(); ax[0].grid(alpha=.3)
-ax[1].plot(ep, [h['auroc'] for h in history], 'o-', label='AUROC')
-ax[1].plot(ep, [h['pf1_breast'] for h in history], 's-', label='pF1 breast')
-ax[1].plot(ep, [h['f1_breast'] for h in history], '^-', label='F1 breast')
-ax[1].set_title('Métriques val'); ax[1].set_xlabel('epoch'); ax[1].legend(); ax[1].grid(alpha=.3)
+ax[0].axvline(_p1+0.5, color='r', ls='--', alpha=.5, label='début P2')
+ax[0].set_title('Loss'); ax[0].set_xlabel('epoch global'); ax[0].legend(); ax[0].grid(alpha=.3)
+ax[1].plot(ep, [h['auroc'] for h in history], 'o-', label='AUROC image')
+ax[1].plot(ep, [h['auroc_breast'] for h in history], 's-', label='AUROC sein')
+ax[1].plot(ep, [h['pf1_breast'] for h in history], '^-', label='pF1 sein')
+ax[1].axvline(_p1+0.5, color='r', ls='--', alpha=.5)
+ax[1].set_title('Métriques val'); ax[1].set_xlabel('epoch global'); ax[1].legend(); ax[1].grid(alpha=.3)
 plt.tight_layout(); plt.savefig(f"{FIG_DIR}/mammoclip_b5_curves.png", dpi=110, bbox_inches='tight')
 plt.close()
 

@@ -1,16 +1,11 @@
-# ── Environnement pixi ──────────────────────────────────────────────────────
-.pixi/*
-!.pixi/config.toml
-pixi.lock
+# ── Caches d'images (générés / hébergés sur Kaggle Datasets) ────────────────
+cache1024_jpeg/
+cache*/
+*_jpeg/
+*.zip
 
-# ── Notes internes (ne jamais pusher) ────────────────────────────────────────
-CONTEXT.md
-PREPROCESS.md
-
-# ── Données (trop lourdes pour GitHub) ───────────────────────────────────────
+# ── Données compétition (non redistribuables) ───────────────────────────────
 data/
-data/raw/
-data/processed/
 *.dcm
 *.h5
 *.hdf5
@@ -18,33 +13,31 @@ dicom_output/
 train.csv
 df_final.csv
 
-# ── Poids de modèles ─────────────────────────────────────────────────────────
+# ── Poids de modèles (lourds) ───────────────────────────────────────────────
 checkpoints/
 *.pth
 *.pt
 *.safetensors
+*.tar
+hf/
 
-# ── ZIP Kaggle Dataset (généré localement) ───────────────────────────────────
-rsna-breast-cancer-code.zip
+# ── Sorties de kernels rapatriées ───────────────────────────────────────────
+results_*/
+*.log
 
-# ── Python ───────────────────────────────────────────────────────────────────
+# ── Environnement ───────────────────────────────────────────────────────────
+.pixi/
 __pycache__/
 *.pyc
 *.pyo
 .env
+.venv/
 
-# ── OS / IDE ──────────────────────────────────────────────────────────────────
+# ── OS / IDE ────────────────────────────────────────────────────────────────
 .DS_Store
 .idea/
-.gitattributes
+.ipynb_checkpoints/
 
-# ── Logs & expériences ────────────────────────────────────────────────────────
-wandb/
-runs/
-
-# ── Ancien code (non versionné) ───────────────────────────────────────────────
-old/
-
-# ── Scripts de tests locaux (pas des livrables) ───────────────────────────────
-test_model.py
-train_compare.py
+# ── Notes internes ──────────────────────────────────────────────────────────
+CONTEXT.md
+PREPROCESS.md

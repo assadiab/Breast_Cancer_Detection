@@ -1,0 +1,111 @@
+{
+  "model": "mammoclip_b5_multihead_1024",
+  "best_auroc_breast_val": 0.8085,
+  "best_tag": "P2-ft E2",
+  "history": [
+    {
+      "phase": "P1-frozen",
+      "epoch": 1,
+      "train_loss": 0.942,
+      "lr": 0.00097,
+      "auroc": 0.6833,
+      "pf1_breast": 0.0532,
+      "f1_breast": 0.0987,
+      "threshold": 0.38,
+      "auroc_breast": 0.7136
+    },
+    {
+      "phase": "P1-frozen",
+      "epoch": 2,
+      "train_loss": 0.8782,
+      "lr": 0.00075,
+      "auroc": 0.7221,
+      "pf1_breast": 0.057,
+      "f1_breast": 0.1377,
+      "threshold": 0.46,
+      "auroc_breast": 0.7418
+    },
+    {
+      "phase": "P1-frozen",
+      "epoch": 3,
+      "train_loss": 0.845,
+      "lr": 0.000413,
+      "auroc": 0.7244,
+      "pf1_breast": 0.0554,
+      "f1_breast": 0.1031,
+      "threshold": 0.56,
+      "auroc_breast": 0.7531
+    },
+    {
+      "phase": "P1-frozen",
+      "epoch": 4,
+      "train_loss": 0.8309,
+      "lr": 0.000117,
+      "auroc": 0.7341,
+      "pf1_breast": 0.0603,
+      "f1_breast": 0.1261,
+      "threshold": 0.44,
+      "auroc_breast": 0.7603
+    },
+    {
+      "phase": "P1-frozen",
+      "epoch": 5,
+      "train_loss": 0.8361,
+      "lr": 0.0,
+      "auroc": 0.7375,
+      "pf1_breast": 0.0603,
+      "f1_breast": 0.1154,
+      "threshold": 0.42,
+      "auroc_breast": 0.7643
+    },
+    {
+      "phase": "P2-ft",
+      "epoch": 1,
+      "train_loss": 0.8344,
+      "lr": 8e-06,
+      "auroc": 0.756,
+      "pf1_breast": 0.0701,
+      "f1_breast": 0.1645,
+      "threshold": 0.44,
+      "auroc_breast": 0.7876
+    },
+    {
+      "phase": "P2-ft",
+      "epoch": 2,
+      "train_loss": 0.7983,
+      "lr": 3e-06,
+      "auroc": 0.7776,
+      "pf1_breast": 0.0822,
+      "f1_breast": 0.2091,
+      "threshold": 0.54,
+      "auroc_breast": 0.8085
+    }
+  ],
+  "test_metrics": {
+    "auroc": 0.8284,
+    "pf1_breast": 0.0905,
+    "f1_breast": 0.3,
+    "threshold": 0.6,
+    "auroc_breast": 0.8611
+  },
+  "config": {
+    "img_size": 1024,
+    "batch": 32,
+    "heads": [
+      "cancer",
+      "biopsy",
+      "invasive",
+      "birads",
+      "density"
+    ],
+    "weights": {
+      "cancer": 1.0,
+      "biopsy": 0.15,
+      "invasive": 0.15,
+      "birads": 0.1,
+      "density": 0.1
+    },
+    "p1_epochs": 5,
+    "p2_epochs": 3
+  }
+}
