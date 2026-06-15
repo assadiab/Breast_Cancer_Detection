@@ -14,9 +14,9 @@ averaged, matching the RSNA target granularity). The split is **patient-wise** (
 
 | Metric | Value |
 |---|---|
-| **AUROC (breast level)** | **0.861** |
-| AUROC (image level) | 0.828 |
-| F1 (optimal threshold, breast level) | 0.30 |
+| **AUROC (breast level)** | **0.880** |
+| AUROC (image level) | 0.847 |
+| F1 (optimal threshold, breast level) | 0.36 |
 
 <p align="center">
   <img src="docs/images/training_curves.png" width="80%" alt="Training curves: loss and validation AUROC / pF1"><br>

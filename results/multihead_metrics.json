@@ -1,92 +1,70 @@
 {
   "model": "mammoclip_b5_multihead_1024",
-  "best_auroc_breast_val": 0.8085,
-  "best_tag": "P2-ft E2",
+  "best_auroc_breast_val": 0.8164,
+  "best_tag": "P2-ft E3",
   "history": [
     {
       "phase": "P1-frozen",
       "epoch": 1,
-      "train_loss": 0.942,
-      "lr": 0.00097,
-      "auroc": 0.6833,
-      "pf1_breast": 0.0532,
-      "f1_breast": 0.0987,
+      "train_loss": 0.9268,
+      "lr": 0.000587,
+      "auroc": 0.698,
+      "pf1_breast": 0.0546,
+      "f1_breast": 0.0963,
       "threshold": 0.38,
-      "auroc_breast": 0.7136
+      "auroc_breast": 0.7281
     },
     {
       "phase": "P1-frozen",
       "epoch": 2,
-      "train_loss": 0.8782,
-      "lr": 0.00075,
-      "auroc": 0.7221,
-      "pf1_breast": 0.057,
-      "f1_breast": 0.1377,
-      "threshold": 0.46,
-      "auroc_breast": 0.7418
-    },
-    {
-      "phase": "P1-frozen",
-      "epoch": 3,
-      "train_loss": 0.845,
-      "lr": 0.000413,
-      "auroc": 0.7244,
-      "pf1_breast": 0.0554,
-      "f1_breast": 0.1031,
-      "threshold": 0.56,
-      "auroc_breast": 0.7531
-    },
-    {
-      "phase": "P1-frozen",
-      "epoch": 4,
-      "train_loss": 0.8309,
-      "lr": 0.000117,
-      "auroc": 0.7341,
-      "pf1_breast": 0.0603,
-      "f1_breast": 0.1261,
-      "threshold": 0.44,
-      "auroc_breast": 0.7603
-    },
-    {
-      "phase": "P1-frozen",
-      "epoch": 5,
-      "train_loss": 0.8361,
+      "train_loss": 0.8636,
       "lr": 0.0,
-      "auroc": 0.7375,
-      "pf1_breast": 0.0603,
-      "f1_breast": 0.1154,
-      "threshold": 0.42,
-      "auroc_breast": 0.7643
+      "auroc": 0.7265,
+      "pf1_breast": 0.0565,
+      "f1_breast": 0.1136,
+      "threshold": 0.44,
+      "auroc_breast": 0.7513
     },
     {
       "phase": "P2-ft",
       "epoch": 1,
-      "train_loss": 0.8344,
-      "lr": 8e-06,
-      "auroc": 0.756,
-      "pf1_breast": 0.0701,
-      "f1_breast": 0.1645,
-      "threshold": 0.44,
-      "auroc_breast": 0.7876
+      "train_loss": 0.8463,
+      "lr": 1e-05,
+      "auroc": 0.7413,
+      "pf1_breast": 0.0649,
+      "f1_breast": 0.1404,
+      "threshold": 0.5,
+      "auroc_breast": 0.7681
     },
     {
       "phase": "P2-ft",
       "epoch": 2,
-      "train_loss": 0.7983,
-      "lr": 3e-06,
-      "auroc": 0.7776,
-      "pf1_breast": 0.0822,
-      "f1_breast": 0.2091,
-      "threshold": 0.54,
-      "auroc_breast": 0.8085
+      "train_loss": 0.7866,
+      "lr": 9e-06,
+      "auroc": 0.7843,
+      "pf1_breast": 0.0838,
+      "f1_breast": 0.2077,
+      "threshold": 0.6,
+      "auroc_breast": 0.8109
+    },
+    {
+      "phase": "P2-ft",
+      "epoch": 3,
+      "train_loss": 0.7522,
+      "lr": 8e-06,
+      "auroc": 0.7855,
+      "pf1_breast": 0.0915,
+      "f1_breast": 0.2232,
+      "threshold": 0.56,
+      "auroc_breast": 0.8164
     }
   ],
   "test_metrics": {
-    "auroc": 0.8284,
-    "pf1_breast": 0.0905,
-    "f1_breast": 0.3,
-    "threshold": 0.6,
-    "auroc_breast": 0.8611
+    "auroc": 0.8475,
+    "pf1_breast": 0.1028,
+    "f1_breast": 0.3636,
+    "threshold": 0.7,
+    "auroc_breast": 0.8797
   },
   "config": {
     "img_size": 1024,
@@ -105,7 +83,7 @@
       "birads": 0.1,
       "density": 0.1
     },
-    "p1_epochs": 5,
-    "p2_epochs": 3
+    "p1_epochs": 2,
+    "p2_epochs": 8
   }
 }
