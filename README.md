@@ -14,9 +14,9 @@ averaged, matching the RSNA target granularity). The split is **patient-wise** (
 
 | Metric | Value |
 |---|---|
-| **AUROC (breast level)** | **0.880** |
-| AUROC (image level) | 0.847 |
-| F1 (optimal threshold, breast level) | 0.36 |
+| **AUROC (breast level)** | **0.897** |
+| AUROC (image level) | 0.863 |
+| F1 (optimal threshold, breast level) | 0.39 |
 
 <p align="center">
   <img src="docs/images/training_curves.png" width="80%" alt="Training curves: loss and validation AUROC / pF1"><br>
@@ -77,14 +77,14 @@ Otsu-based ROI crop). The model trains from this image cache rather than from DI
 ```
 .
 ├── kaggle/
-│   ├── build_cache/        # CPU kernel: DICOM -> 1024 JPEG cache with ROI crop
-│   ├── train_multihead/    # GPU kernel: the multi-task model (current version)
-│   └── legacy_singlehead/  # earlier 512px single-head variant (reference)
+│   ├── build_cache/            # CPU kernel: DICOM -> 1024 JPEG cache (windowing + ROI crop)
+│   ├── build_cache_crop/       # CPU kernel: crop-only variant (ablation, no windowing)
+│   ├── train_multihead/        # GPU kernel: the multi-task model (current version)
+│   └── train_multihead_resume/ # GPU kernel: resume fine-tuning from a checkpoint
 ├── scripts/                # notebook generators + utilities
-│   ├── build_notebook_multihead.py   # generates the multi-task training notebook
-│   ├── build_cache_kernel.py         # generates the cache-building kernel
+│   ├── build_notebook_multihead.py   # generates the multi-task training notebook (--resume supported)
+│   ├── build_cache_kernel.py         # generates the cache-building kernel (--nowin for crop-only)
 │   └── download_cache.py             # paginated retrieval of Kaggle kernel outputs
-├── src/                    # pipeline library (DICOM loader, ROI crop, windowing)
 ├── docs/images/            # figures
 ├── results/                # metrics (JSON) for the current version
 ├── requirements.txt

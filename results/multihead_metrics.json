@@ -1,70 +1,59 @@
 {
   "model": "mammoclip_b5_multihead_1024",
-  "best_auroc_breast_val": 0.8164,
+  "best_auroc_breast_val": 0.8409,
   "best_tag": "P2-ft E3",
   "history": [
     {
-      "phase": "P1-frozen",
-      "epoch": 1,
-      "train_loss": 0.9268,
-      "lr": 0.000587,
-      "auroc": 0.698,
-      "pf1_breast": 0.0546,
-      "f1_breast": 0.0963,
-      "threshold": 0.38,
-      "auroc_breast": 0.7281
-    },
-    {
-      "phase": "P1-frozen",
-      "epoch": 2,
-      "train_loss": 0.8636,
-      "lr": 0.0,
-      "auroc": 0.7265,
-      "pf1_breast": 0.0565,
-      "f1_breast": 0.1136,
-      "threshold": 0.44,
-      "auroc_breast": 0.7513
-    },
-    {
       "phase": "P2-ft",
       "epoch": 1,
-      "train_loss": 0.8463,
+      "train_loss": 0.7307,
       "lr": 1e-05,
-      "auroc": 0.7413,
-      "pf1_breast": 0.0649,
-      "f1_breast": 0.1404,
-      "threshold": 0.5,
-      "auroc_breast": 0.7681
+      "auroc": 0.7921,
+      "pf1_breast": 0.0974,
+      "f1_breast": 0.2427,
+      "threshold": 0.58,
+      "auroc_breast": 0.8267
     },
     {
       "phase": "P2-ft",
       "epoch": 2,
-      "train_loss": 0.7866,
+      "train_loss": 0.6873,
       "lr": 9e-06,
-      "auroc": 0.7843,
-      "pf1_breast": 0.0838,
-      "f1_breast": 0.2077,
-      "threshold": 0.6,
-      "auroc_breast": 0.8109
+      "auroc": 0.8012,
+      "pf1_breast": 0.1083,
+      "f1_breast": 0.2857,
+      "threshold": 0.56,
+      "auroc_breast": 0.8361
     },
     {
       "phase": "P2-ft",
       "epoch": 3,
-      "train_loss": 0.7522,
+      "train_loss": 0.6437,
       "lr": 8e-06,
-      "auroc": 0.7855,
-      "pf1_breast": 0.0915,
-      "f1_breast": 0.2232,
-      "threshold": 0.56,
-      "auroc_breast": 0.8164
+      "auroc": 0.8085,
+      "pf1_breast": 0.1116,
+      "f1_breast": 0.2816,
+      "threshold": 0.62,
+      "auroc_breast": 0.8409
+    },
+    {
+      "phase": "P2-ft",
+      "epoch": 4,
+      "train_loss": 0.5982,
+      "lr": 7e-06,
+      "auroc": 0.8071,
+      "pf1_breast": 0.1203,
+      "f1_breast": 0.2802,
+      "threshold": 0.6,
+      "auroc_breast": 0.8396
     }
   ],
   "test_metrics": {
-    "auroc": 0.8475,
-    "pf1_breast": 0.1028,
-    "f1_breast": 0.3636,
-    "threshold": 0.7,
-    "auroc_breast": 0.8797
+    "auroc": 0.8631,
+    "pf1_breast": 0.126,
+    "f1_breast": 0.3857,
+    "threshold": 0.74,
+    "auroc_breast": 0.8971
   },
   "config": {
     "img_size": 1024,

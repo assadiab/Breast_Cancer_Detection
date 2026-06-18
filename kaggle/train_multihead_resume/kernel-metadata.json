@@ -1,0 +1,13 @@
+{
+  "id": "testlolll/rsna-mammoclip-mh-resume-assa",
+  "title": "RSNA MammoCLIP MH Resume Assa",
+  "code_file": "rsna-mammoclip-mh-resume.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": ["testlolll/rsna-cache-1024-assa", "testlolll/rsna-mammoclip-v6-ckpt"],
+  "competition_sources": ["rsna-breast-cancer-detection"],
+  "kernel_sources": []
+}

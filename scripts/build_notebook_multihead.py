@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Génère le notebook RSNA Mammo-CLIP MULTI-TÊTES (cache 1024, 5 têtes, loss multi-tâches)."""
+"""Generate the RSNA Mammo-CLIP MULTI-HEAD training notebook (1024 cache, 5 heads, multi-task loss)."""
 import json, sys
 
 cells = []
@@ -7,14 +7,14 @@ def code(s): cells.append({"cell_type":"code","execution_count":None,"metadata":
 def md(s):   cells.append({"cell_type":"markdown","metadata":{},"source":s})
 
 # ════════════════════════════════════════════════════════════════════════════
-md("""# RSNA Breast Cancer — Mammo-CLIP B5 MULTI-TÊTES (1024px)
+md("""# RSNA Breast Cancer — Mammo-CLIP B5 multi-head (1024px)
 
-Backbone EfficientNet-B5 pré-entraîné mammographie (Mammo-CLIP) **partagé** + 5 têtes :
-**cancer** (principale) + **biopsy** + **invasive** + **BIRADS** + **densité** (auxiliaires, régularisation).
+Shared EfficientNet-B5 encoder (Mammo-CLIP, pretrained on mammograms) + 5 heads:
+**cancer** (main) + **biopsy** + **invasive** + **BIRADS** + **density** (auxiliary, regularization).
 
-- Cache **1024px + crop ROI** (dataset `rsna-cache-1024-assa`, JPEG décompressé au démarrage)
-- Loss multi-tâches : cancer (1.0) + aux (0.1–0.15), aux masquées si label manquant
-- 2 phases (gel → fine-tuning doux), sélection sur AUROC sein (tête cancer), TTA""")
+- **1024px + ROI crop** cache (dataset `rsna-cache-1024-assa`, JPEG mounted/unzipped at start)
+- Multi-task loss: cancer (1.0) + aux (0.1-0.15), aux masked when the label is missing
+- 2 stages (freeze -> gentle fine-tuning), selection on breast-level AUROC (cancer head), TTA""")
 
 # ── Cell 1 : GPU ─────────────────────────────────────────────────────────────
 code("""import subprocess
@@ -22,7 +22,7 @@ _smi = subprocess.run(['nvidia-smi','--query-gpu=name,memory.total','--format=cs
                       capture_output=True, text=True)
 print("GPU:", _smi.stdout.strip())
 if 'T4' not in _smi.stdout:
-    print("⚠️  GPU != T4 — vérifier l'accélérateur dans l'UI Kaggle")""")
+    print("⚠️  GPU != T4 — check the accelerator in the Kaggle UI")""")
 
 # ── Cell 2 : installs + imports ──────────────────────────────────────────────
 code("""import subprocess, sys
@@ -44,37 +44,37 @@ USE_AMP = DEVICE.type=='cuda'
 MC_MEAN, MC_STD = 0.3089279, 0.25053555408335154
 print(f"torch {torch.__version__} | device {DEVICE} | AMP={USE_AMP}")""")
 
-# ── Cell 3 : cache 1024 (mount direct ou décompression) + config ─────────────
+# ── Cell 3: 1024 cache (direct mount or unzip) + config ─────────────
 code("""WORK='/kaggle/working'
-# 1) Si le dataset est déjà extrait (Kaggle dézippe les .zip) → utiliser le dossier .jpg directement
+# 1) If the dataset is already extracted (Kaggle unzips archives) -> use the .jpg folder directly
 _best=(0,None)
 for dp,dn,fn in os.walk('/kaggle/input'):
     n=sum(1 for f in fn if f.endswith('.jpg'))
     if n>_best[0]: _best=(n,dp)
 if _best[0]>1000:
     CACHE_DIR=_best[1]
-    print(f"✅ cache extrait (mount direct) : {_best[0]} JPEG → {CACHE_DIR}")
+    print(f"✅ cache extracted (direct mount) : {_best[0]} JPEG → {CACHE_DIR}")
 else:
-    # 2) Sinon décompresser cache_1024.zip vers /kaggle/working
+    # 2) Otherwise unzip cache_1024.zip into /kaggle/working
     CACHE_DIR=f'{WORK}/cache_1024'
     _zip=None
     for dp,dn,fn in os.walk('/kaggle/input'):
         if 'cache_1024.zip' in fn: _zip=os.path.join(dp,'cache_1024.zip'); break
-    assert _zip, "ni dossier .jpg ni cache_1024.zip trouvé dans /kaggle/input"
-    print(f"Décompression {_zip} ...")
+    assert _zip, "no .jpg folder nor cache_1024.zip found in /kaggle/input"
+    print(f"Unzipping {_zip} ...")
     t0=time.time()
     with zipfile.ZipFile(_zip) as z: z.extractall(WORK)
     for dp,dn,fn in os.walk(WORK):
         if sum(1 for f in fn if f.endswith('.jpg'))>1000: CACHE_DIR=dp; break
-    print(f"✅ {len(glob.glob(CACHE_DIR+'/*.jpg'))} JPEG en {(time.time()-t0)/60:.1f} min → {CACHE_DIR}")
+    print(f"✅ {len(glob.glob(CACHE_DIR+'/*.jpg'))} JPEG in {(time.time()-t0)/60:.1f} min → {CACHE_DIR}")
 
-# CSV de split
+# Split CSVs
 _csv=None
 for dp,dn,fn in os.walk('/kaggle/input'):
     if 'X_train.csv' in fn: _csv=dp; break
-assert _csv, "X_train.csv introuvable"
+assert _csv, "X_train.csv not found"
 print("CSV dir:", _csv)
-# train.csv (labels auxiliaires) — depuis la compétition de préférence
+# train.csv (auxiliary labels) - preferably from the competition
 _train_csv=None
 for dp,dn,fn in os.walk('/kaggle/input'):
     if 'train.csv' in fn and 'rsna-breast-cancer-detection' in dp: _train_csv=os.path.join(dp,'train.csv')
@@ -83,13 +83,13 @@ if _train_csv is None:
         if 'train.csv' in fn: _train_csv=os.path.join(dp,'train.csv'); break
 print("train.csv:", _train_csv)
 
-# ── Hyperparamètres (1024 = lourd → batch petit + grad accum) ────────────────
+# ── Hyper-parameters (1024 is heavy -> small batch + grad accumulation) ────────────────
 IMG_SIZE     = 1024
 BATCH_SIZE   = 4
 ACCUM_STEPS  = 8        # batch effectif = 32
 NUM_WORKERS  = 4
-P1_EPOCHS    = 2        # backbone gelé : juste réchauffer les têtes (le gain est en P2)
-P2_EPOCHS    = 8        # fine-tuning doux : phase productive (capée par le garde-fou 8h)
+P1_EPOCHS    = 2        # frozen backbone: just warm up the heads (the gain is in P2)
+P2_EPOCHS    = 8        # gentle fine-tuning: productive stage (capped by the 8h safety guard)
 PATIENCE     = 4
 LR_HEAD_P1   = 1e-3
 LR_BACKBONE  = 1e-5
@@ -102,9 +102,9 @@ N_BIRADS, N_DENSITY = 3, 4
 CKPT_DIR=f'{WORK}/checkpoints'; os.makedirs(CKPT_DIR,exist_ok=True)
 RES_DIR =f'{WORK}/results';     os.makedirs(RES_DIR,exist_ok=True)
 FIG_DIR =f'{WORK}/figures';     os.makedirs(FIG_DIR,exist_ok=True)
-print("✅ Config prête")""")
+print("✅ Config ready")""")
 
-# ── Cell 4 : splits + merge labels auxiliaires ───────────────────────────────
+# ── Cell 4: splits + merge auxiliary labels ───────────────────────────────
 code("""X_train=pd.read_csv(f'{_csv}/X_train.csv'); Y_train=pd.read_csv(f'{_csv}/Y_train.csv')
 X_val  =pd.read_csv(f'{_csv}/X_val.csv');   Y_val  =pd.read_csv(f'{_csv}/Y_val.csv')
 X_test =pd.read_csv(f'{_csv}/X_test.csv');  Y_test =pd.read_csv(f'{_csv}/Y_test.csv')
@@ -124,14 +124,14 @@ for n,L in [('train',L_train),('val',L_val),('test',L_test)]:
     print(f"{n}: {len(L)} | cancer+={int(L['cancer'].sum())} biopsy+={int(L['biopsy'].sum())} "
           f"invasive+={int(L['invasive'].sum())} birads_ok={(L['birads']>=0).sum()} dens_ok={(L['density']>=0).sum()}")""")
 
-# ── Cell 5 : Dataset multi-labels (cache 1024 déjà cropé) ────────────────────
+# ── Cell 5: multi-label dataset (1024 cache already ROI-cropped) ────────────────────
 code('''class MammoMultiDataset(Dataset):
     def __init__(self, L_df, cache_dir, img_size=1024, augment=False):
         d = L_df.reset_index(drop=True)
         paths = d.apply(lambda r: f"{cache_dir}/{r['patient_id']}_{r['image_id']}.jpg", axis=1).values
         mask = np.array([os.path.exists(p) for p in paths])
         if not mask.all():
-            print(f"  ⚠️ {(~mask).sum()}/{len(mask)} images absentes (filtrées)")
+            print(f"  ⚠️ {(~mask).sum()}/{len(mask)} images missing from cache (filtered out)")
         self.df = d[mask].reset_index(drop=True)
         self.paths = paths[mask]
         self.img_size = img_size; self.augment = augment
@@ -166,9 +166,9 @@ code('''class MammoMultiDataset(Dataset):
            'density':torch.tensor(int(r['density']),dtype=torch.long)}
         return t, y
 
-print("✅ MammoMultiDataset défini")''')
+print("✅ MammoMultiDataset defined")''')
 
-# ── Cell 6 : Modèle multi-têtes ──────────────────────────────────────────────
+# ── Cell 6: multi-head model ──────────────────────────────────────────────
 code('''def gem(x,p=3,eps=1e-6): return F.avg_pool2d(x.clamp(min=eps).pow(p),(x.size(-2),x.size(-1))).pow(1.0/p)
 class GeM(nn.Module):
     def __init__(self,p=3,eps=1e-6): super().__init__(); self.p=p; self.eps=eps
@@ -223,16 +223,16 @@ if MAMMOCLIP_CKPT is None:
         from huggingface_hub import hf_hub_download
         MAMMOCLIP_CKPT=hf_hub_download(repo_id="shawn24/Mammo-CLIP",
             filename="Pre-trained-checkpoints/b5-model-best-epoch-7.tar", cache_dir=f"{WORK}/hf")
-    except Exception as e: print("⚠️ HF download échec:", e)
+    except Exception as e: print("⚠️ HF download failed:", e)
 model=MammoMultiHead(MAMMOCLIP_CKPT).to(DEVICE)
-print(f"✅ Modèle multi-têtes : {sum(p.numel() for p in model.parameters())/1e6:.1f}M params")''')
+print(f"✅ Multi-head model : {sum(p.numel() for p in model.parameters())/1e6:.1f}M params")''')
 
-# ── Cell 7 : loss multi-tâches + métriques ───────────────────────────────────
+# ── Cell 7: multi-task loss + metrics ───────────────────────────────────
 code('''_pos=L_train['cancer'].sum(); _neg=len(L_train)-_pos
 _pw=torch.tensor([min(_neg/_pos,5.0)],device=DEVICE)
 bce_cancer=nn.BCEWithLogitsLoss(pos_weight=_pw)
 bce=nn.BCEWithLogitsLoss()
-ce=nn.CrossEntropyLoss(ignore_index=-1)   # masque les labels -1 (BIRADS/densité manquants)
+ce=nn.CrossEntropyLoss(ignore_index=-1)   # masks -1 labels (missing BIRADS/density)
 
 def multitask_loss(out, y):
     l = W['cancer']*bce_cancer(out['cancer'], y['cancer'])
@@ -270,7 +270,7 @@ def compute_metrics(df,probs,labels):
     return {'auroc':round(float(auroc),4),'pf1_breast':round(float(pfbeta(bl,bp)),4),
             'f1_breast':round(float(f1),4),'threshold':round(float(thr),3),
             'auroc_breast':round(float(roc_auc_score(bl,bp)) if len(np.unique(bl))>1 else 0.5,4)}
-print("✅ loss + métriques définies")''')
+print("✅ loss + metrics defined")''')
 
 # ── Cell 8 : loaders ─────────────────────────────────────────────────────────
 code("""ds_tr=MammoMultiDataset(L_train,CACHE_DIR,IMG_SIZE,augment=True)
@@ -284,7 +284,7 @@ val_loader  =DataLoader(ds_va,batch_size=BATCH_SIZE*2,shuffle=False,num_workers=
 test_loader =DataLoader(ds_te,batch_size=BATCH_SIZE*2,shuffle=False,num_workers=NUM_WORKERS,pin_memory=True)
 print(f"✅ loaders train={len(ds_tr)} val={len(ds_va)} test={len(ds_te)}")""")
 
-# ── Cell 9 : entraînement 2 phases ───────────────────────────────────────────
+# ── Cell 9: 2-stage training ───────────────────────────────────────────
 code('''def run_eval(loader, L_df):
     model.eval(); probs=[]; labs=[]
     with torch.no_grad():
@@ -297,17 +297,17 @@ code('''def run_eval(loader, L_df):
     return compute_metrics(L_df, probs, labs)
 
 history=[]; best_auroc=-1; best_state=None; best_tag=""
-T_DEADLINE = time.time() + 8.0*3600   # garde-fou : arrêt propre avant la limite 9h GPU
+T_DEADLINE = time.time() + 8.0*3600   # safety guard: clean stop before the 9h GPU limit
 def to_dev(y): return {k:v.to(DEVICE,non_blocking=True) for k,v in y.items()}
 
 def train_phase(tag, n_epochs, optimizer, frozen, patience=PATIENCE):
     global best_auroc,best_state,best_tag
     if time.time() > T_DEADLINE:
-        print(f"⏰ Deadline atteinte avant {tag} — phase sautée"); return
+        print(f"⏰ Deadline reached before {tag} - stage skipped"); return
     spe=max(1,len(train_loader)//ACCUM_STEPS); total=spe*n_epochs; warm=max(1,int(total*WARMUP_RATIO))
     sched=torch.optim.lr_scheduler.LambdaLR(optimizer, lambda s: s/warm if s<warm else 0.5*(1+math.cos(math.pi*(s-warm)/max(1,total-warm))))
     scaler=torch.amp.GradScaler('cuda',enabled=USE_AMP); no_imp=0
-    print(f"\\n━━━ {tag} : {n_epochs} ep (backbone {'GELÉ' if frozen else 'dégelé'}) ━━━")
+    print(f"\\n━━━ {tag} : {n_epochs} ep (backbone {'FROZEN' if frozen else 'unfrozen'}) ━━━")
     for epoch in range(1,n_epochs+1):
         model.train()
         if frozen: model.encoder.eval()
@@ -323,7 +323,7 @@ def train_phase(tag, n_epochs, optimizer, frozen, patience=PATIENCE):
                 scaler.step(optimizer); scaler.update(); optimizer.zero_grad(); sched.step()
             rl+=loss.item()*ACCUM_STEPS; nb+=1
             if time.time() > T_DEADLINE:
-                print("⏰ Deadline atteinte en cours d'epoch — arrêt"); break
+                print("⏰ Deadline reached mid-epoch - stopping"); break
         m=run_eval(val_loader, L_val)
         history.append({'phase':tag,'epoch':epoch,'train_loss':round(rl/max(nb,1),4),
                         'lr':round(optimizer.param_groups[0]['lr'],6),**m})
@@ -338,7 +338,7 @@ def train_phase(tag, n_epochs, optimizer, frozen, patience=PATIENCE):
             if no_imp>=patience: print(f"⏹ early stop {tag} E{epoch}"); break
         gc.collect(); torch.cuda.empty_cache()
         if time.time() > T_DEADLINE:
-            print(f"⏰ Deadline — fin anticipée de {tag}"); break
+            print(f"⏰ Deadline - early end of {tag}"); break
 
 t0=time.time()
 model.freeze_backbone()
@@ -356,7 +356,7 @@ opt2=torch.optim.AdamW([
 train_phase("P2-ft", P2_EPOCHS, opt2, frozen=False)
 
 if best_state: model.load_state_dict(best_state)
-print(f"\\n✅ Entraînement terminé en {(time.time()-t0)/60:.1f} min — meilleur {best_tag} AUROC sein val={best_auroc:.4f}")''')
+print(f"\\n✅ Training done in {(time.time()-t0)/60:.1f} min — best {best_tag} breast AUROC val={best_auroc:.4f}")''')
 
 # ── Cell 10 : test + TTA ─────────────────────────────────────────────────────
 code('''def run_test_tta(loader, L_df):
@@ -372,7 +372,7 @@ code('''def run_test_tta(loader, L_df):
     return compute_metrics(L_df,probs,labs), probs, labs
 
 test_metrics, test_probs, test_labs = run_test_tta(test_loader, L_test)
-print("📊 TEST — Mammo-CLIP B5 multi-têtes (1024)")
+print("📊 TEST - Mammo-CLIP B5 multi-head (1024)")
 for k,v in test_metrics.items(): print(f"  {k:14s}: {v}")
 
 results={'model':'mammoclip_b5_multihead_1024','best_auroc_breast_val':best_auroc,'best_tag':best_tag,
@@ -380,13 +380,13 @@ results={'model':'mammoclip_b5_multihead_1024','best_auroc_breast_val':best_auro
          'config':{'img_size':IMG_SIZE,'batch':BATCH_SIZE*ACCUM_STEPS,'heads':list(W.keys()),'weights':W,
                    'p1_epochs':P1_EPOCHS,'p2_epochs':P2_EPOCHS}}
 json.dump(results, open(f"{RES_DIR}/mammoclip_mh.json",'w'), indent=2)
-print(f"✅ résultats → {RES_DIR}/mammoclip_mh.json")''')
+print(f"✅ results -> {RES_DIR}/mammoclip_mh.json")''')
 
 # ── Cell 11 : courbes ────────────────────────────────────────────────────────
 code('''ep=list(range(1,len(history)+1)); _p1=sum(1 for h in history if h['phase'].startswith('P1'))
 fig,ax=plt.subplots(1,2,figsize=(13,4))
 ax[0].plot(ep,[h['train_loss'] for h in history],'o-'); ax[0].axvline(_p1+0.5,color='r',ls='--',alpha=.5)
-ax[0].set_title('Loss multi-tâches'); ax[0].set_xlabel('epoch'); ax[0].grid(alpha=.3)
+ax[0].set_title('Multi-task loss'); ax[0].set_xlabel('epoch'); ax[0].grid(alpha=.3)
 ax[1].plot(ep,[h['auroc'] for h in history],'o-',label='AUROC img')
 ax[1].plot(ep,[h['auroc_breast'] for h in history],'s-',label='AUROC sein')
 ax[1].plot(ep,[h['pf1_breast'] for h in history],'^-',label='pF1 sein')
@@ -398,7 +398,35 @@ bp,bl=breast_agg(L_test,test_probs,test_labs); fpr,tpr,_=roc_curve(bl,bp)
 plt.figure(figsize=(5,5)); plt.plot(fpr,tpr,label=f"AUROC={test_metrics['auroc_breast']:.3f}")
 plt.plot([0,1],[0,1],'k--',alpha=.3); plt.legend(); plt.grid(alpha=.3); plt.title('ROC test (sein)')
 plt.savefig(f"{FIG_DIR}/mammoclip_mh_roc.png",dpi=110,bbox_inches='tight'); plt.close()
-print("✅ figures sauvegardées\\n🎉 NOTEBOOK MULTI-TÊTES TERMINÉ")''')
+print("✅ figures saved\\n🎉 MULTI-HEAD NOTEBOOK DONE")''')
+
+# ── Mode --resume : charger un checkpoint et reprendre directement en P2 ──────
+RESUME = '--resume' in sys.argv
+if RESUME:
+    _load_ckpt = (
+        "\n# RESUME : load the full v6 checkpoint (encoder + heads) on top of the Mammo-CLIP init\n"
+        "for _dp,_dn,_fn in os.walk('/kaggle/input'):\n"
+        "    for _f in _fn:\n"
+        "        if _f.endswith('.pth'):\n"
+        "            _ck=os.path.join(_dp,_f)\n"
+        "            model.load_state_dict(torch.load(_ck,map_location=DEVICE)); print('checkpoint repris :',_ck)\n"
+    )
+    for c in cells:
+        s=''.join(c['source'])
+        # 1) inject checkpoint loading right after model creation
+        if 'print(f"✅ Multi-head model' in s:
+            c['source'] = s + _load_ckpt
+        # 2) skip stage 1 (already done in the previous run) -> go straight to P2
+        if 'train_phase("P1-frozen"' in s:
+            s2 = s.replace(
+                "model.freeze_backbone()\n"
+                "_heads=[model.head_cancer,model.head_biopsy,model.head_invasive,model.head_birads,model.head_density]\n"
+                "opt1=torch.optim.AdamW([p for h in _heads for p in h.parameters()], lr=LR_HEAD_P1, weight_decay=WEIGHT_DECAY)\n"
+                'train_phase("P1-frozen", P1_EPOCHS, opt1, frozen=True)\n\n'
+                "if best_state: model.load_state_dict(best_state)\n",
+                "# RESUME : P1 skipped (checkpoint already fine-tuned)\n"
+                "_heads=[model.head_cancer,model.head_biopsy,model.head_invasive,model.head_birads,model.head_density]\n")
+            c['source'] = s2
 
 # ════════════════════════════════════════════════════════════════════════════
 nb={"metadata":{"kernelspec":{"display_name":"Python 3","language":"python","name":"python3"},
@@ -406,7 +434,8 @@ nb={"metadata":{"kernelspec":{"display_name":"Python 3","language":"python","nam
     "kaggle":{"accelerator":"nvidiaTeslaT4","isGpuEnabled":True,"isInternetEnabled":True,
               "language":"python","sourceType":"notebook"}},
     "nbformat":4,"nbformat_minor":4,"cells":cells}
-out=sys.argv[1] if len(sys.argv)>1 else "notebooks_multihead/rsna-mammoclip-multihead.ipynb"
+_args=[a for a in sys.argv[1:] if not a.startswith('--')]
+out=_args[0] if _args else "notebooks_multihead/rsna-mammoclip-multihead.ipynb"
 import os as _os; _os.makedirs(_os.path.dirname(out),exist_ok=True)
 json.dump(nb, open(out,'w'), ensure_ascii=False, indent=1)
-print(f"✅ Notebook généré : {out} ({len(cells)} cellules)")
+print(f"✅ Notebook generated : {out} ({len(cells)} cells){' [RESUME P2]' if RESUME else ''}")

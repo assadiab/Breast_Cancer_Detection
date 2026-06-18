@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Télécharge TOUT l'output du kernel v42 (47k PNGs) en paginant via l'API bas-niveau."""
+"""Download the FULL kernel output (47k PNGs) by paginating through the low-level API."""
 import os, sys, time
 import requests
 from kaggle.api.kaggle_api_extended import KaggleApi
@@ -13,7 +13,7 @@ os.makedirs(DEST, exist_ok=True)
 api = KaggleApi(); api.authenticate()
 
 def list_page(kaggle, token):
-    """Liste une page avec backoff exponentiel sur 429/erreurs réseau."""
+    """List one page with exponential backoff on 429 / network errors."""
     delay = 5
     for attempt in range(8):
         try:
@@ -27,12 +27,12 @@ def list_page(kaggle, token):
         except Exception as e:
             msg = str(e)
             if '429' in msg or 'Too Many' in msg or 'Connection' in msg or 'timeout' in msg.lower():
-                print(f"  ⏳ rate-limit/réseau (tentative {attempt+1}) — pause {delay}s", flush=True)
+                print(f"  ⏳ rate-limit/network (attempt {attempt+1}) — sleeping {delay}s", flush=True)
                 time.sleep(delay)
                 delay = min(delay * 2, 120)
             else:
                 raise
-    raise RuntimeError("Échec liste page après 8 tentatives")
+    raise RuntimeError("Failed to list page after 8 attempts")
 
 token = None
 total = 0
@@ -57,13 +57,13 @@ with api.build_kaggle_client() as kaggle:
                     break
                 except Exception as e:
                     if attempt == 2:
-                        print(f"  ⚠️ échec {item.file_name}: {e}")
+                        print(f"  ⚠️ failed {item.file_name}: {e}")
                     time.sleep(1)
             total += 1
         token = resp.next_page_token
         print(f"[page {page}] cumul={total} fichiers — token={'oui' if token else 'FIN'}", flush=True)
         if not token or not files:
             break
-        time.sleep(0.5)  # petit délai pour éviter le rate-limit
+        time.sleep(0.5)  # small delay to avoid rate-limiting
 
-print(f"\n✅ Terminé : {total} fichiers dans {DEST}")
+print(f"\n✅ Done: {total} files in {DEST}")
