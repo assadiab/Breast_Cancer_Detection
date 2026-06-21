@@ -1,0 +1,89 @@
+{
+  "model": "mammoclip_b5_multihead_1024",
+  "best_auroc_breast_val": 0.8066,
+  "best_tag": "P2-ft E3",
+  "history": [
+    {
+      "phase": "P1-frozen",
+      "epoch": 1,
+      "train_loss": 0.6807,
+      "lr": 0.000587,
+      "auroc": 0.6916,
+      "pf1_breast": 0.0539,
+      "f1_breast": 0.0909,
+      "threshold": 0.38,
+      "auroc_breast": 0.7225
+    },
+    {
+      "phase": "P1-frozen",
+      "epoch": 2,
+      "train_loss": 0.6498,
+      "lr": 0.0,
+      "auroc": 0.7235,
+      "pf1_breast": 0.0564,
+      "f1_breast": 0.1124,
+      "threshold": 0.44,
+      "auroc_breast": 0.7489
+    },
+    {
+      "phase": "P2-ft",
+      "epoch": 1,
+      "train_loss": 0.6273,
+      "lr": 1e-05,
+      "auroc": 0.7368,
+      "pf1_breast": 0.0647,
+      "f1_breast": 0.1299,
+      "threshold": 0.46,
+      "auroc_breast": 0.7651
+    },
+    {
+      "phase": "P2-ft",
+      "epoch": 2,
+      "train_loss": 0.5782,
+      "lr": 9e-06,
+      "auroc": 0.7751,
+      "pf1_breast": 0.0817,
+      "f1_breast": 0.2148,
+      "threshold": 0.62,
+      "auroc_breast": 0.8035
+    },
+    {
+      "phase": "P2-ft",
+      "epoch": 3,
+      "train_loss": 0.5439,
+      "lr": 8e-06,
+      "auroc": 0.7727,
+      "pf1_breast": 0.0921,
+      "f1_breast": 0.2459,
+      "threshold": 0.68,
+      "auroc_breast": 0.8066
+    }
+  ],
+  "test_metrics": {
+    "auroc": 0.8315,
+    "pf1_breast": 0.1024,
+    "f1_breast": 0.3619,
+    "threshold": 0.74,
+    "auroc_breast": 0.8664
+  },
+  "config": {
+    "img_size": 1024,
+    "batch": 32,
+    "heads": [
+      "cancer",
+      "biopsy",
+      "invasive",
+      "birads",
+      "density"
+    ],
+    "weights": {
+      "cancer": 1.0,
+      "biopsy": 0.0,
+      "invasive": 0.0,
+      "birads": 0.0,
+      "density": 0.0
+    },
+    "p1_epochs": 2,
+    "p2_epochs": 8
+  }
+}

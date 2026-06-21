@@ -23,6 +23,18 @@ averaged, matching the RSNA target granularity). The split is **patient-wise** (
   <img src="docs/images/roc_test.png" width="42%" alt="ROC curve on the test set (breast level)">
 </p>
 
+### Ablation — multi-task contribution
+
+Same architecture, same recipe, only the auxiliary head weights differ. The auxiliary heads improve the
+breast-level AUROC by **+0.014**, confirming that multi-task supervision helps the shared encoder.
+
+| Variant | AUROC (breast) | AUROC (image) | F1 (breast) |
+|---|---|---|---|
+| Cancer head only (aux weights = 0) | 0.866 | 0.832 | 0.36 |
+| Full multi-task (5 heads) | **0.880** | **0.847** | 0.36 |
+
+The gain is on ranking (AUROC) rather than calibration (F1 unchanged).
+
 ## Architecture
 
 ```mermaid
