@@ -428,6 +428,15 @@ if RESUME:
                 "_heads=[model.head_cancer,model.head_biopsy,model.head_invasive,model.head_birads,model.head_density]\n")
             c['source'] = s2
 
+# ── Ablation --cancer-only : set auxiliary head weights to 0 (same arch, cancer loss only) ──
+if '--cancer-only' in sys.argv:
+    for c in cells:
+        s=''.join(c['source'])
+        if "W = {'cancer':1.0" in s:
+            c['source']=s.replace(
+                "W = {'cancer':1.0, 'biopsy':0.15, 'invasive':0.15, 'birads':0.10, 'density':0.10}",
+                "W = {'cancer':1.0, 'biopsy':0.0, 'invasive':0.0, 'birads':0.0, 'density':0.0}  # ablation: cancer-only")
+
 # ════════════════════════════════════════════════════════════════════════════
 nb={"metadata":{"kernelspec":{"display_name":"Python 3","language":"python","name":"python3"},
     "language_info":{"name":"python","version":"3.12.0"},
@@ -438,4 +447,5 @@ _args=[a for a in sys.argv[1:] if not a.startswith('--')]
 out=_args[0] if _args else "notebooks_multihead/rsna-mammoclip-multihead.ipynb"
 import os as _os; _os.makedirs(_os.path.dirname(out),exist_ok=True)
 json.dump(nb, open(out,'w'), ensure_ascii=False, indent=1)
-print(f"✅ Notebook generated : {out} ({len(cells)} cells){' [RESUME P2]' if RESUME else ''}")
+_tags = (' [RESUME P2]' if RESUME else '') + (' [CANCER-ONLY]' if '--cancer-only' in sys.argv else '')
+print(f"✅ Notebook generated : {out} ({len(cells)} cells){_tags}")

@@ -1,0 +1,13 @@
+{
+  "id": "testlolll/rsna-mammoclip-crop-assa",
+  "title": "RSNA MammoCLIP Crop Assa",
+  "code_file": "rsna-mammoclip-multihead.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": ["testlolll/rsna-cache-1024-crop-assa"],
+  "competition_sources": ["rsna-breast-cancer-detection"],
+  "kernel_sources": []
+}

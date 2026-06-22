@@ -35,6 +35,17 @@ breast-level AUROC by **+0.014**, confirming that multi-task supervision helps t
 
 The gain is on ranking (AUROC) rather than calibration (F1 unchanged).
 
+### Ablation — preprocessing (windowing)
+
+Same model and recipe, only the cache preprocessing differs. VOI-LUT windowing improves the breast-level AUROC by **+0.014**.
+
+| Cache preprocessing | AUROC (breast) | AUROC (image) |
+|---|---|---|
+| ROI crop only (no windowing) | 0.866 | 0.834 |
+| ROI crop + VOI-LUT windowing | **0.880** | **0.847** |
+
+The two design choices (multi-task heads and windowing) each contribute about +0.014 AUROC.
+
 ## Architecture
 
 ```mermaid
