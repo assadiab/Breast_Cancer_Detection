@@ -16,7 +16,8 @@ averaged, matching the RSNA target granularity). The split is **patient-wise** (
 |---|---|
 | **AUROC (breast level)** | **0.897** |
 | AUROC (image level) | 0.863 |
-| F1 (optimal threshold, breast level) | 0.39 |
+| F1 (optimal threshold, breast level) | 0.42 |
+| pF1 (breast level, calibrated) | 0.195 |
 
 <p align="center">
   <img src="docs/images/training_curves.png" width="80%" alt="Training curves: loss and validation AUROC / pF1"><br>
@@ -45,6 +46,18 @@ Same model and recipe, only the cache preprocessing differs. VOI-LUT windowing i
 | ROI crop + VOI-LUT windowing | **0.880** | **0.847** |
 
 The two design choices (multi-task heads and windowing) each contribute about +0.014 AUROC.
+
+### Probabilistic F1 calibration
+
+The competition metric is probabilistic F1 (pF1), which rewards well-calibrated confident probabilities.
+The trained model ranks cases well (high AUROC) but its raw probabilities are diffuse. **Temperature scaling**
+(a single scalar `T` fit on the validation set, no retraining) sharpens the probabilities and nearly doubles
+the test pF1, leaving the AUROC unchanged.
+
+| Test pF1 (breast level) | Value |
+|---|---|
+| Raw probabilities | 0.128 |
+| Temperature-scaled (T = 0.4) | **0.195** |
 
 ## Architecture
 
@@ -101,12 +114,16 @@ Otsu-based ROI crop). The model trains from this image cache rather than from DI
 .
 ├── kaggle/
 │   ├── build_cache/            # CPU kernel: DICOM -> 1024 JPEG cache (windowing + ROI crop)
-│   ├── build_cache_crop/       # CPU kernel: crop-only variant (ablation, no windowing)
+│   ├── build_cache_crop/       # CPU kernel: crop-only variant (preprocessing ablation)
 │   ├── train_multihead/        # GPU kernel: the multi-task model (current version)
-│   └── train_multihead_resume/ # GPU kernel: resume fine-tuning from a checkpoint
+│   ├── train_multihead_resume/ # GPU kernel: resume fine-tuning from a checkpoint
+│   ├── train_multihead_crop/   # GPU kernel: training on the crop-only cache (ablation)
+│   ├── ablation_cancer_only/   # GPU kernel: cancer head only (multi-task ablation)
+│   └── calibration/            # GPU kernel: pF1 temperature-scaling calibration
 ├── scripts/                # notebook generators + utilities
-│   ├── build_notebook_multihead.py   # generates the multi-task training notebook (--resume supported)
+│   ├── build_notebook_multihead.py   # generates the training notebook (--resume / --cancer-only)
 │   ├── build_cache_kernel.py         # generates the cache-building kernel (--nowin for crop-only)
+│   ├── build_calibration.py          # generates the pF1 calibration notebook
 │   └── download_cache.py             # paginated retrieval of Kaggle kernel outputs
 ├── docs/images/            # figures
 ├── results/                # metrics (JSON) for the current version
