@@ -1,19 +1,13 @@
-# Image de base PyTorch + CUDA (GPU). Pour du CPU-only, remplacer par python:3.11-slim.
-FROM pytorch/pytorch:2.2.0-cuda11.8-cudnn8-runtime
-
-# Dépendances système pour OpenCV / GDCM
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+FROM ghcr.io/prefix-dev/pixi:latest
 
 WORKDIR /work
 
-# Dépendances Python (cache de layer : on copie d'abord requirements.txt)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Resolve and install the environment from pixi.toml (lock generated on first install)
+COPY pixi.toml pixi.lock* ./
+RUN pixi install
 
-# Code du projet
+# Project code
 COPY . .
 
-# Par défaut : régénère le notebook d'entraînement depuis le script source
-CMD ["python", "scripts/build_notebook_multihead.py", "kaggle/train_multihead/rsna-mammoclip-multihead.ipynb"]
+# Default: regenerate the training notebook from its source script
+CMD ["pixi", "run", "build-train"]

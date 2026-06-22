@@ -1,63 +1,68 @@
-# Breast Cancer Detection on Screening Mammography
+# Adapting a Mammography Foundation Model for Breast Cancer Detection
 
-A multi-task deep learning model that predicts breast cancer from screening mammograms, built on the
-[RSNA Screening Mammography Breast Cancer Detection](https://www.kaggle.com/competitions/rsna-breast-cancer-detection) dataset.
+A study of how to **adapt a domain-specific foundation model** to breast cancer detection on screening
+mammography ([RSNA Screening Mammography Breast Cancer Detection](https://www.kaggle.com/competitions/rsna-breast-cancer-detection)).
 
-A shared **EfficientNet-B5** image encoder (Mammo-CLIP weights, pretrained on screening mammograms) feeds **five task heads** —
-one main *cancer* head and four auxiliary heads (*biopsy, invasive, BIRADS, breast density*) that provide additional clinical
-supervision and regularize the shared trunk.
+Rather than training a classifier from scratch, this project starts from **[Mammo-CLIP](https://github.com/batmanlab/Mammo-CLIP)**
+— an EfficientNet-B5 image encoder pretrained on screening mammograms — and investigates *what actually matters when
+adapting such a model*: multi-task supervision, image preprocessing, the fine-tuning strategy, and probability calibration.
+Each design choice is backed by a controlled ablation.
+
+<p align="center">
+  <img src="docs/images/sample_inputs.png" width="92%" alt="Sample preprocessed mammograms (cancer and normal)">
+</p>
 
 ## Results
 
-Evaluated on a held-out test set, at the **breast level** (predictions for images of the same `(patient, laterality)` are
-averaged, matching the RSNA target granularity). The split is **patient-wise** (70/15/15) with no leakage across train/val/test.
+Held-out test set, **breast level** (image probabilities of the same `(patient, laterality)` are aggregated, matching the
+RSNA target). Patient-wise split (70/15/15), no leakage.
 
 | Metric | Value |
 |---|---|
 | **AUROC (breast level)** | **0.897** |
 | AUROC (image level) | 0.863 |
-| F1 (optimal threshold, breast level) | 0.42 |
-| pF1 (breast level, calibrated) | 0.195 |
+| F1 (optimal threshold) | 0.42 |
+| pF1 (calibrated, RSNA metric) | 0.195 |
 
 <p align="center">
-  <img src="docs/images/training_curves.png" width="80%" alt="Training curves: loss and validation AUROC / pF1"><br>
-  <img src="docs/images/roc_test.png" width="42%" alt="ROC curve on the test set (breast level)">
+  <img src="docs/images/training_curves.png" width="78%" alt="Training curves: loss and validation AUROC / pF1"><br>
+  <img src="docs/images/roc_test.png" width="40%" alt="ROC curve on the test set (breast level)">
 </p>
 
-### Ablation — multi-task contribution
+## What matters when adapting the foundation model
 
-Same architecture, same recipe, only the auxiliary head weights differ. The auxiliary heads improve the
-breast-level AUROC by **+0.014**, confirming that multi-task supervision helps the shared encoder.
+Three controlled studies, each isolating one design choice (same encoder, same recipe).
 
-| Variant | AUROC (breast) | AUROC (image) | F1 (breast) |
-|---|---|---|---|
-| Cancer head only (aux weights = 0) | 0.866 | 0.832 | 0.36 |
-| Full multi-task (5 heads) | **0.880** | **0.847** | 0.36 |
+**1 — Multi-task supervision.** Adding four auxiliary heads (*biopsy, invasive, BIRADS, density*) on top of the shared
+encoder improves breast-level AUROC by **+0.014** over a cancer-only head.
 
-The gain is on ranking (AUROC) rather than calibration (F1 unchanged).
+| Variant | AUROC (breast) | AUROC (image) |
+|---|---|---|
+| Cancer head only | 0.866 | 0.832 |
+| Full multi-task (5 heads) | **0.880** | **0.847** |
 
-### Ablation — preprocessing (windowing)
+**2 — Preprocessing (windowing).** Applying DICOM VOI-LUT windowing on top of the breast ROI crop adds **+0.014** AUROC —
+the foundation model benefits from the radiologist-intended contrast.
 
-Same model and recipe, only the cache preprocessing differs. VOI-LUT windowing improves the breast-level AUROC by **+0.014**.
+<p align="center">
+  <img src="docs/images/windowing_vs_crop.png" width="60%" alt="Same mammogram: ROI crop only vs crop + VOI-LUT windowing">
+</p>
 
 | Cache preprocessing | AUROC (breast) | AUROC (image) |
 |---|---|---|
-| ROI crop only (no windowing) | 0.866 | 0.834 |
+| ROI crop only | 0.866 | 0.834 |
 | ROI crop + VOI-LUT windowing | **0.880** | **0.847** |
 
-The two design choices (multi-task heads and windowing) each contribute about +0.014 AUROC.
-
-### Probabilistic F1 calibration
-
-The competition metric is probabilistic F1 (pF1), which rewards well-calibrated confident probabilities.
-The trained model ranks cases well (high AUROC) but its raw probabilities are diffuse. **Temperature scaling**
-(a single scalar `T` fit on the validation set, no retraining) sharpens the probabilities and nearly doubles
-the test pF1, leaving the AUROC unchanged.
+**3 — Probability calibration.** The competition metric (probabilistic F1) rewards well-calibrated confident probabilities.
+The model ranks cases well but its raw probabilities are diffuse; a single **temperature** fit on validation (no retraining)
+nearly doubles the test pF1 while leaving the AUROC unchanged.
 
 | Test pF1 (breast level) | Value |
 |---|---|
 | Raw probabilities | 0.128 |
 | Temperature-scaled (T = 0.4) | **0.195** |
+
+Takeaway: multi-task supervision and windowing each contribute ~+0.014 AUROC, and calibration is essential for the pF1 metric.
 
 ## Architecture
 
@@ -65,7 +70,7 @@ the test pF1, leaving the AUROC unchanged.
 flowchart TD
     A["Mammogram (DICOM)"] --> B["Preprocessing<br/>VOI-LUT + MONOCHROME1<br/>breast ROI crop (Otsu)<br/>resize 1024x1024"]
     B --> C["Normalization<br/>mean=0.309 std=0.251<br/>grayscale replicated to 3 channels"]
-    C --> D["EfficientNet-B5 encoder<br/>(Mammo-CLIP weights, shared trunk)"]
+    C --> D["EfficientNet-B5 encoder<br/>(Mammo-CLIP foundation weights, shared trunk)"]
     D --> E["GeM pooling -> 2048-d"]
     E --> F1["cancer head (1)"]
     E --> F2["biopsy head (1)"]
@@ -79,87 +84,75 @@ flowchart TD
     F5 --> G
 ```
 
-**Encoder.** EfficientNet-B5 (`efficientnet_pytorch`) with [Mammo-CLIP](https://github.com/batmanlab/Mammo-CLIP) weights.
-Input is a single mammogram replicated to 3 channels and normalized with the encoder's statistics. Features are aggregated
-with **Generalized Mean (GeM) pooling** into a 2048-d embedding.
-
-**Multi-task heads.** The trunk is shared across all heads; each head is a small MLP
-(`Dropout → Linear → BatchNorm → SiLU → Dropout → Linear`). The main head predicts cancer; the four auxiliary heads predict
-clinically related targets. Missing `BIRADS` / `density` labels (~50%) are **masked** in the loss (`ignore_index`), so an
-example only contributes to the auxiliary tasks for which it has a label.
-
-**Two-stage training.** Stage 1 freezes the encoder and trains the heads (warm-up). Stage 2 unfreezes the encoder for **gentle
-fine-tuning** (encoder LR 1e-5, 10× lower than the heads). The checkpoint with the best **breast-level validation AUROC** is kept.
-
-**Class imbalance (~2% positives).** Handled with a `WeightedRandomSampler` (oversampling positives) and a `pos_weight` on the
-cancer head.
-
-**Training & inference robustness.** Automatic mixed precision (AMP), gradient accumulation (effective batch size 32),
-data augmentation (flips, small rotations, gamma/brightness jitter), and **test-time augmentation** (horizontal flip).
+- **Encoder.** EfficientNet-B5 (`efficientnet_pytorch`) initialized with the Mammo-CLIP foundation weights. Input is a single
+  mammogram replicated to 3 channels with the encoder's normalization; features are pooled with **Generalized Mean (GeM)**.
+- **Heads.** The trunk is shared; each head is a small MLP. Missing `BIRADS` / `density` labels (~50%) are **masked** in the loss.
+- **Two-stage fine-tuning.** Stage 1 freezes the encoder and warms up the heads; stage 2 unfreezes the encoder for **gentle**
+  fine-tuning (encoder LR 1e-5, 10x lower than the heads). The best breast-level validation AUROC checkpoint is kept.
+- **Imbalance (~2% positives).** `WeightedRandomSampler` + `pos_weight` on the cancer head.
+- **Robustness.** Mixed precision, gradient accumulation (effective batch 32), augmentation, and test-time augmentation.
 
 ## Data pipeline
 
-Mammograms are decoded once from DICOM into **breast-cropped 1024×1024 JPEGs** (VOI-LUT windowing, MONOCHROME1 handling,
-Otsu-based ROI crop). The model trains from this image cache rather than from DICOM, so the full GPU budget goes to training.
+DICOMs are decoded once into **breast-cropped 1024x1024 JPEGs** (VOI-LUT windowing, MONOCHROME1 handling, Otsu ROI crop).
+Training reads this cache instead of DICOM, so the full GPU budget goes to learning.
 
 | Resource | Link |
 |---|---|
 | Competition data (DICOM) | [RSNA Screening Mammography Breast Cancer Detection](https://www.kaggle.com/competitions/rsna-breast-cancer-detection) |
 | Preprocessed 1024 JPEG cache | [`testlolll/rsna-cache-1024-assa`](https://www.kaggle.com/datasets/testlolll/rsna-cache-1024-assa) *(private for now — will be made public)* |
-| Pretrained encoder weights | [Mammo-CLIP — `shawn24/Mammo-CLIP`](https://huggingface.co/shawn24/Mammo-CLIP) |
+| Foundation model weights | [Mammo-CLIP — `shawn24/Mammo-CLIP`](https://huggingface.co/shawn24/Mammo-CLIP) |
 
 ## Repository layout
 
 ```
 .
-├── kaggle/
-│   ├── build_cache/            # CPU kernel: DICOM -> 1024 JPEG cache (windowing + ROI crop)
-│   ├── build_cache_crop/       # CPU kernel: crop-only variant (preprocessing ablation)
-│   ├── train_multihead/        # GPU kernel: the multi-task model (current version)
-│   ├── train_multihead_resume/ # GPU kernel: resume fine-tuning from a checkpoint
-│   ├── train_multihead_crop/   # GPU kernel: training on the crop-only cache (ablation)
-│   ├── ablation_cancer_only/   # GPU kernel: cancer head only (multi-task ablation)
-│   └── calibration/            # GPU kernel: pF1 temperature-scaling calibration
-├── scripts/                # notebook generators + utilities
-│   ├── build_notebook_multihead.py   # generates the training notebook (--resume / --cancer-only)
-│   ├── build_cache_kernel.py         # generates the cache-building kernel (--nowin for crop-only)
-│   ├── build_calibration.py          # generates the pF1 calibration notebook
-│   └── download_cache.py             # paginated retrieval of Kaggle kernel outputs
-├── docs/images/            # figures
-├── results/                # metrics (JSON) for the current version
-├── requirements.txt
+├── kaggle/                         # self-contained Kaggle notebooks (one folder per experiment)
+│   ├── build_cache/                # DICOM -> 1024 JPEG cache (windowing + ROI crop)
+│   ├── build_cache_crop/           # crop-only cache (preprocessing ablation)
+│   ├── train_multihead/            # the multi-task model (main)
+│   ├── train_multihead_resume/     # resume fine-tuning from a checkpoint
+│   ├── train_multihead_crop/       # training on the crop-only cache (ablation)
+│   ├── ablation_cancer_only/       # cancer head only (multi-task ablation)
+│   └── calibration/                # pF1 temperature-scaling calibration
+├── scripts/                        # notebook generators + utilities (single source of truth)
+│   ├── make_splits.py              # deterministic train/val/test split from the competition CSV
+│   ├── build_notebook_multihead.py # training notebook (--resume / --cancer-only)
+│   ├── build_cache_kernel.py       # cache kernel (--nowin for crop-only)
+│   ├── build_calibration.py        # pF1 calibration notebook
+│   └── download_cache.py           # paginated retrieval of Kaggle kernel outputs
+├── docs/images/                    # figures
+├── results/                        # metrics (JSON)
+├── pixi.toml                       # environment & tasks
 └── Dockerfile
 ```
 
-The Kaggle notebooks are **generated** from the `scripts/build_*.py` files, which are the single source of truth (easy to
-review and diff in version control).
+Kaggle notebooks are **generated** from the `scripts/build_*.py` files — the single source of truth, easy to review and diff.
 
 ## Reproducing
 
-### On Kaggle (free T4 GPU)
-
-1. **Build the cache** — run `kaggle/build_cache` (CPU); it produces the `rsna-cache-1024-assa` dataset (47,004 cropped 1024 JPEGs).
-2. **Train** — open `kaggle/train_multihead`, select the **T4 GPU** accelerator, and *Run All*. The Mammo-CLIP weights are
-   downloaded automatically from HuggingFace.
-
-### Locally with Docker
+**Environment** ([pixi](https://pixi.sh)):
 
 ```bash
-docker build -t rsna-mammoclip .
-
-# regenerate the training notebook from its source script
-docker run --rm -v "$PWD":/work rsna-mammoclip \
-    python scripts/build_notebook_multihead.py kaggle/train_multihead/rsna-mammoclip-multihead.ipynb
+pixi install
+pixi run build-train      # regenerate the training notebook from its source script
 ```
+
+**Full pipeline from public sources** (no private dataset required):
+
+1. **Split** — download the competition data, then `python scripts/make_splits.py train.csv` regenerates the exact
+   patient-wise split (`df_final.csv` + `X/Y_{train,val,test}.csv`), deterministically (seed 42).
+2. **Cache** — run `kaggle/build_cache` (CPU) to build the 1024 JPEG cache (47,004 images) from the DICOMs.
+3. **Train** — open `kaggle/train_multihead`, select the **T4** accelerator, *Run All*. The Mammo-CLIP foundation
+   weights are downloaded automatically from HuggingFace.
+4. **Calibrate** — run `kaggle/calibration` to temperature-scale the probabilities for the pF1 metric.
 
 ## Reproducibility & FAIR
 
-- **Findable / Accessible.** Data and weights are referenced by stable public identifiers (Kaggle dataset, HuggingFace model);
-  the preprocessed cache is published as a versioned Kaggle dataset.
-- **Interoperable.** Standard formats throughout (DICOM in, JPEG cache, JSON metrics) and a pinned `requirements.txt`.
-- **Reproducible.** Fixed random seed, patient-wise split, deterministic preprocessing, notebooks generated from versioned
-  scripts, and a `Dockerfile` that pins the runtime. Heavy artifacts (image cache, model weights) are not committed — they are
-  hosted externally and fetched on demand (see `.gitignore`).
+- **Findable / Accessible** — data and weights referenced by stable public identifiers (Kaggle dataset, HuggingFace model).
+- **Interoperable** — standard formats throughout (DICOM in, JPEG cache, JSON metrics); environment pinned via `pixi.toml`.
+- **Reproducible** — fixed seed, patient-wise split, deterministic preprocessing, notebooks generated from versioned scripts,
+  and a `Dockerfile` pinning the runtime. Heavy artifacts (image cache, weights) are hosted externally, not committed.
 
 ## References
 
