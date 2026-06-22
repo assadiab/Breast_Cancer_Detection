@@ -97,6 +97,10 @@ flowchart TD
 DICOMs are decoded once into **breast-cropped 1024x1024 JPEGs** (VOI-LUT windowing, MONOCHROME1 handling, Otsu ROI crop).
 Training reads this cache instead of DICOM, so the full GPU budget goes to learning.
 
+The preprocessing and split choices (removing implants, one image per `(patient, laterality, view)`, handling the
+~2% class imbalance and missing density/BIRADS) are motivated in the exploratory analysis — see
+[`notebooks/eda.ipynb`](notebooks/eda.ipynb).
+
 | Resource | Link |
 |---|---|
 | Competition data (DICOM) | [RSNA Screening Mammography Breast Cancer Detection](https://www.kaggle.com/competitions/rsna-breast-cancer-detection) |
@@ -121,6 +125,7 @@ Training reads this cache instead of DICOM, so the full GPU budget goes to learn
 │   ├── build_cache_kernel.py       # cache kernel (--nowin for crop-only)
 │   ├── build_calibration.py        # pF1 calibration notebook
 │   └── download_cache.py           # paginated retrieval of Kaggle kernel outputs
+├── notebooks/eda.ipynb             # exploratory data analysis (motivates the design choices)
 ├── docs/images/                    # figures
 ├── results/                        # metrics (JSON)
 ├── pixi.toml                       # environment & tasks
